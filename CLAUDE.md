@@ -18,8 +18,9 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-M1 (project skeleton) is done: packaging, `errors.py`, `options.py`, tooling
-and CI. Next is M2 (rendering core). The build order is in `docs/roadmap.md`.
+M1–M4 are done: rendering (`render/`), page operations, stamps, images, text and
+templates (`document/`, `render/templates.py`). The library is feature-complete for
+now; next is M5 (CLI), then M6 (HTTP service). The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -55,10 +56,19 @@ Full reasoning is in `docs/decisions.md`.
   wrapper. Put new rendering logic in the async code, not in the sync wrapper.
 - Functions in `document/` take and return `bytes` or `PdfDocument`, never file
   paths. Only `PdfDocument.open()` / `.save()` and the CLI touch the filesystem.
+- `PdfDocument` methods never modify `self`; they return a new document. Anything
+  that copies pages between pikepdf PDFs must end with `pages._detach()` (see
+  `docs/architecture.md`), or the result breaks once its source is garbage-collected.
+- Call pdfium (pypdfium2) only through `document/_pdfium.open_pdf()`: pdfium is not
+  thread-safe and the server runs PDF work in threads.
+- New stamp kinds go through `stamp._stamp_each`/`_place`, which handle page rotation.
 - Raise the exceptions from `dravenpdf.errors`, not bare `Exception`s. The
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the
   request guard in `render/guards.py` (SSRF protection). Never bypass it.
+- Don't replace the guard's `route.fetch(max_redirects=0)` loop with
+  `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
+  could redirect Chromium to an internal one unchecked (tests cover this).
 
 ## Commands
 
@@ -69,6 +79,8 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run pytest -m "not browser"       # fast, no Chromium
 uv run pytest                        # full suite
+# If the installed Chromium doesn't match Playwright's version (e.g. a preinstalled
+# one), point at it: DRAVENPDF_CHROMIUM_PATH=/path/to/chrome uv run pytest
 make check                           # lint + typecheck + unit tests
 # once the CLI (M5) and server (M6) exist:
 uv run dravenpdf render in.html -o out.pdf

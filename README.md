@@ -8,7 +8,8 @@ web fonts, SVG and JavaScript all work. You can then merge, split, rotate, stamp
 and compress the PDFs, convert between PDFs and images, and extract text.
 
 > **Status:** early development. The design is complete (see [`docs/`](docs/));
-> the project skeleton is in place and the rendering core is next.
+> the Python library works (rendering, templates, page operations, stamps, images,
+> text); the CLI and HTTP service are next.
 > See the [roadmap](docs/roadmap.md).
 
 ## Features

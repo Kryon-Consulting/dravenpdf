@@ -4,7 +4,9 @@
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- Chromium, installed through Playwright (one time): `uv run playwright install --with-deps chromium`
+- Chromium, installed through Playwright (one time): `uv run playwright install --with-deps chromium`.
+  To use a different Chromium binary (for example one preinstalled in a container
+  whose version doesn't match Playwright's), set `DRAVENPDF_CHROMIUM_PATH=/path/to/chrome`.
 - Fonts for the scripts you render (for example `fonts-noto`, `fonts-noto-cjk`,
   `fonts-noto-color-emoji` on Debian/Ubuntu). Missing fonts are the most common
   cause of "wrong looking" PDFs.
@@ -44,7 +46,9 @@ A `Makefile` wraps these (`make lint`, `make test`, `make serve`, `make docker`)
   size limits and each endpoint.
 
 Tests must not hit the public internet. URL rendering tests use a local HTTP
-server fixture, and the guard allowlist includes it.
+server fixture (`server` in `tests/conftest.py`) and the `local_renderer` fixture,
+whose allowlist is `["localhost"]`; `127.0.0.1` URLs to the same server stay
+blocked, which is how redirect and SSRF tests get a "forbidden" target.
 
 ## Conventions
 

@@ -10,15 +10,19 @@ Research, decisions, architecture, API design (this folder).
 `errors.py`, `options.py`, ruff/mypy/pytest config, Makefile, CI workflow.
 `RenderOptions.to_pdf_kwargs()` already maps options to Playwright's `page.pdf()`.
 
-## M2 – Rendering core ☐
+## M2 – Rendering core ☑
 `BrowserPool`, `AsyncRenderer` (`from_html`, `from_url`, `from_file`), guards,
 waits, header/footer, sync `Renderer`, integration tests.
+Also a minimal `PdfDocument` (`from_bytes`, `open`, `page_count`, `to_bytes`, `save`)
+so renders return the final type; M3 fills in the rest.
 
-## M3 – PdfDocument and page operations ☐
+## M3 – PdfDocument and page operations ☑
 Open/save/compress/metadata, merge, split, extract, rotate, delete, reorder, unit tests.
+Also `insert`, `copy`, `page_size`, and 1-based range strings with open ends (`"8-"`).
 
-## M4 – Stamps, images, text, templates ☐
+## M4 – Stamps, images, text, templates ☑
 Text/image/HTML stamps, images ↔ PDF, text extraction, Jinja2 `from_template`.
+Also `overlay` (a page of another PDF as letterhead or background) and `TemplateError`.
 
 ## M5 – CLI ☐
 Typer commands listed in `library-api.md`.

@@ -84,6 +84,7 @@ DravenPdfError
 ├── RenderError
 │   ├── RenderTimeoutError
 │   └── BlockedRequestError     # guard refused a URL
+├── TemplateError               # Jinja2 template not found / invalid / failed
 ├── InvalidPdfError             # input bytes are not a readable PDF
 ├── PdfOperationError           # e.g. page index out of range
 └── PoolExhaustedError          # too many renders waiting (server → 503)
@@ -91,7 +92,8 @@ DravenPdfError
 
 ### `render/`
 - **`pool.py` – `BrowserPool`**: owns one Playwright instance and one Chromium
-  process. An `asyncio.Semaphore` caps concurrent renders (`max_concurrency`) and
+  process (binary from `executable_path` / `$DRAVENPDF_CHROMIUM_PATH`, else
+  Playwright's download). An `asyncio.Semaphore` caps concurrent renders (`max_concurrency`) and
   a bounded wait (`max_queue`) raises `PoolExhaustedError` when too many renders
   are waiting. It relaunches Chromium if it disconnects, and can recycle the
   browser after N renders to limit memory growth.
@@ -99,31 +101,48 @@ DravenPdfError
   `from_template`. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
-- **`guards.py`**: a `page.route("**/*")` handler. It allows `data:`/`about:`, and
-  `http(s)` only when the host resolves to a public IP (or is on the
-  allowlist). It blocks `file://`, private, loopback and link-local addresses and
-  the cloud metadata IP `169.254.169.254`. It checks every request, not just the
-  first navigation, and re-checks redirects.
+- **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
+  and `http(s)` only when the host resolves to a public IP (or is on the
+  allowlist). It blocks private, loopback, link-local, CGNAT and multicast addresses,
+  including the cloud metadata IP `169.254.169.254`. `file://` is blocked except
+  inside `file_root`, which `from_file` sets to the rendered file's folder.
+  Playwright does not call route handlers for redirect hops, so the guard fetches
+  HTTP(S) requests itself (`route.fetch(max_redirects=0)`), checks each redirect
+  target, and fulfills the browser with the final response. Blocked requests are
+  aborted and recorded; with `on_blocked="fail"` (default) the render then raises
+  `BlockedRequestError`, with `"skip"` it renders without them.
+  Known limit: DNS is resolved separately for the check and the connection
+  (DNS rebinding), so production deployments should also restrict egress.
 - **`waits.py`**: waits for `document.fonts.ready`, scrolls to trigger lazy images,
   waits for all `<img>` elements to load, and optionally waits for
   `window.__DRAVENPDF_READY__ === true` (for pages that render with JS).
 - **`templates.py`**: a sandboxed Jinja2 environment with autoescaping on. Loads
-  templates from a directory or a string. Assets are resolved through `base_url`.
+  templates from a directory or a string. `from_template` with a `template_dir`
+  first navigates to the folder's `file://` URL and then swaps in the rendered HTML,
+  so relative assets resolve from the folder (and the guard's `file_root` is the folder).
 - **`sync.py` – `Renderer`**: runs an event loop in a background thread and
   mirrors the `AsyncRenderer` API. It is a convenience for scripts and Django,
   not a separate implementation.
 
 ### `document/`
 All functions work on bytes in memory. `PdfDocument` wraps a `pikepdf.Pdf` and
-exposes chainable methods that each return a `PdfDocument`.
+exposes chainable methods that each return a **new** `PdfDocument` (inputs are never
+modified). pikepdf copies pages from another PDF lazily and needs the source to stay
+open until the copy is saved, so operations that assemble pages from other PDFs
+save-and-reopen their result (`pages._detach`) before returning it.
 - **`pages.py`**: `merge`, `split(every=n | ranges=[...])`, `extract`, `rotate`,
   `delete`, `reorder`, `insert`.
-- **`stamp.py`**: overlays or underlays a one-page PDF on selected pages. Text and
-  image stamps are generated as small PDFs. HTML stamps are rendered by the
-  renderer first, so watermarks can use normal HTML and CSS.
+- **`stamp.py`**: every stamp (text, image, a page of another PDF, rendered HTML) is a
+  Form XObject drawn in the page's *displayed* coordinates, then placed with one
+  matrix that undoes `/Rotate` and the MediaBox offset, so stamps stay upright on
+  rotated pages. Opacity is an ExtGState on the placement plus a transparency group
+  on the form. Text uses the built-in Helvetica font (cp1252 only). `stamp_html`
+  renders the HTML at each distinct page size and overlays it.
 - **`images.py`**: `images_to_pdf` (img2pdf, no re-encoding) and `to_images`
   (pypdfium2, DPI and format options).
 - **`text.py`**: per-page text via pypdfium2.
+- **`_pdfium.py`**: pdfium is not thread-safe, so every pdfium call holds one global
+  lock (`_pdfium.LOCK`, via `open_pdf()`).
 - **Compression** lives in `PdfDocument.save(compress=True)`: pikepdf object
   streams, stream compression, and removing unused objects. No Ghostscript.
 
