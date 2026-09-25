@@ -150,3 +150,34 @@ def test_environment_validation(field: str, value: object, message: str) -> None
 def test_viewport_bounds(width: int, height: int) -> None:
     with pytest.raises(ValidationError):
         Viewport(width=width, height=height)
+
+
+# ---------------------------------------------------------------- CSS page size, tagging
+
+
+def test_css_page_size_and_no_margins() -> None:
+    kwargs = RenderOptions(prefer_css_page_size=True, margins=None).to_pdf_kwargs()
+
+    assert kwargs["prefer_css_page_size"] is True
+    assert "margin" not in kwargs
+
+
+def test_margins_accept_null_in_json() -> None:
+    assert RenderOptions.model_validate_json('{"margins": null}').margins is None
+
+
+@pytest.mark.parametrize(
+    ("fields", "tagged", "outline"),
+    [({}, None, None), ({"tagged": True}, True, None), ({"outline": True}, True, True)],
+)
+def test_tagging_flags(fields: dict[str, bool], tagged: bool | None, outline: bool | None) -> None:
+    kwargs = RenderOptions(**fields).to_pdf_kwargs()
+
+    assert kwargs.get("tagged") is tagged
+    assert kwargs.get("outline") is outline
+
+
+@pytest.mark.parametrize("value", ["", "x" * 10_001])
+def test_wait_for_expression_length(value: str) -> None:
+    with pytest.raises(ValidationError):
+        RenderOptions(wait_for_expression=value)

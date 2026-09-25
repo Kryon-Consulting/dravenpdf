@@ -39,7 +39,10 @@ with Renderer() as r:
 | `paper` | `"A3" \| "A4" \| "A5" \| "Letter" \| "Legal" \| "Tabloid"` | `"A4"` | Ignored if `width`/`height` are set |
 | `width`, `height` | `str \| None` | `None` | CSS units, e.g. `"210mm"` |
 | `landscape` | `bool` | `False` | |
-| `margins` | `Margins` | 20mm top/bottom, 15mm left/right | |
+| `margins` | `Margins \| None` | 20mm top/bottom, 15mm left/right | `None` sends no margins, leaving them to CSS `@page`; an explicit `@page { margin }` wins either way |
+| `prefer_css_page_size` | `bool` | `False` | Use the size from CSS `@page { size }` instead of `paper` / `width` |
+| `tagged` | `bool` | `False` | Tagged PDF (structure tree for screen readers); not a PDF/UA guarantee |
+| `outline` | `bool` | `False` | Bookmarks from the headings; implies `tagged` (Chromium needs the tags to build it) |
 | `scale` | `float` | `1.0` | 0.1–2.0 |
 | `print_background` | `bool` | `True` | |
 | `media` | `"print" \| "screen"` | `"print"` | CSS media type to emulate |
@@ -48,6 +51,7 @@ with Renderer() as r:
 | `wait_until` | `"load" \| "domcontentloaded" \| "networkidle"` | `"networkidle"` | |
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
+| `wait_for_expression` | `str \| None` | `None` | JavaScript expression (or function) polled until truthy, e.g. `"window.charts?.every(c => c.done)"` |
 | `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot and launching Chromium |
 | `fail_on_resource_errors` | `bool` | `False` | Raise `IncompleteRenderError` if an image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx |
 | `fail_on_page_errors` | `bool` | `False` | Raise `IncompleteRenderError` if the page throws an uncaught JavaScript exception |
@@ -61,6 +65,21 @@ with Renderer() as r:
 Environment options apply to that render's own browser context only.
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
+
+### Preparing the page (Python only)
+
+Every `from_*` method on `AsyncRenderer` takes `prepare`, an async function called
+with the Playwright `Page` after it loads and before the waits and printing:
+
+```python
+async def expand_all(page):
+    await page.click("text=Expand all")
+
+doc = await r.from_url("https://dashboard.example/report", prepare=expand_all)
+```
+
+It runs under the render deadline, and the SSRF guard still applies to anything it
+loads. It isn't available over HTTP or on the sync `Renderer`.
 
 ### Render reports
 
@@ -122,8 +141,10 @@ Page numbers in Python arguments are **0-based**. Range strings (`"1-3,5,8-"`) a
 **1-based**, matching how people write page ranges; `"8-"` means page 8 to the end.
 
 Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
-`insert`) keep document info (title, author, ...) but not bookmarks. `rotate`,
-`delete`, `set_metadata` and `copy` keep everything.
+`insert`) keep document info (title, author, ...) but not bookmarks, and the tag
+structure of a `tagged` PDF won't match the new pages. `rotate`, `delete`,
+`set_metadata` and `copy` keep everything. Render with `tagged`/`outline` last if the
+result must stay accessible.
 
 ### Stamps and watermarks
 
@@ -205,6 +226,8 @@ dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--mar
                       [--compress] [--fail-on-resource-errors] [--fail-on-page-errors]
                       [--viewport 1920x1080] [--device-scale-factor 2] [--locale de-DE]
                       [--timezone Europe/Berlin] [--color-scheme dark] [--reduced-motion reduce]
+                      [--prefer-css-page-size] [--css-margins] [--tagged] [--outline]
+                      [--wait-for-expression "window.done === true"]
 dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
 dravenpdf merge       a.pdf b.pdf ... -o out.pdf
 dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)

@@ -203,6 +203,17 @@ def render(
     reduced_motion: Annotated[
         ReducedMotion | None, typer.Option(help="reduce or no-preference.")
     ] = None,
+    prefer_css_page_size: Annotated[
+        bool, typer.Option(help="Use the page size from CSS @page { size }.")
+    ] = False,
+    css_margins: Annotated[
+        bool, typer.Option(help="Send no margins; leave them to CSS @page rules.")
+    ] = False,
+    tagged: Annotated[bool, typer.Option(help="Write a tagged (accessible) PDF.")] = False,
+    outline: Annotated[bool, typer.Option(help="Add bookmarks from headings.")] = False,
+    wait_for_expression: Annotated[
+        str | None, typer.Option(help="JavaScript expression to wait for (truthy).")
+    ] = None,
 ) -> None:
     """Render an HTML file or a web page to PDF. Load problems are printed as warnings."""
     if media not in ("print", "screen"):
@@ -218,7 +229,15 @@ def render(
         timezone=timezone,
         color_scheme=color_scheme,
         reduced_motion=reduced_motion,
+        prefer_css_page_size=prefer_css_page_size,
+        tagged=tagged,
+        outline=outline,
+        wait_for_expression=wait_for_expression,
     )  # fmt: skip
+    if css_margins:
+        if margin is not None:
+            _fail("use either --margin or --css-margins")
+        options = options.model_copy(update={"margins": None})
     with Renderer(
         allowed_hosts=allow_host,
         allow_private_network=allow_private,

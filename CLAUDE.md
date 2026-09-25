@@ -19,8 +19,12 @@ libraries like IronPDF, but uses open-source parts:
 ## Current status
 
 M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
-HTTP service (`server/`). M7 (packaging) is partly done: Dockerfile and compose exist
-but the Docker image has never been built; visual tests and a first release remain. The build order is in `docs/roadmap.md`.
+HTTP service (`server/`). After M6: guard fixes (WebSockets, failed fetches), render
+reports and strict mode, in-memory asset bundles, browser environment options, CSS
+page size, tagged PDFs/outlines, expression waits and `prepare` hooks (see
+`docs/roadmap.md`). Rendering behind a login is not built yet and needs a design first.
+M7 (packaging) is partly done: Dockerfile and compose exist but the Docker image has
+never been built; visual tests and a first release remain.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look

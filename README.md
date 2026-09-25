@@ -15,7 +15,11 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **Render:** HTML strings, files, URLs and Jinja2 templates → PDF
 - **Page setup:** paper size or custom size, orientation, margins, scale, page ranges
 - **Headers and footers** in HTML, with page numbers, total pages, date and title
-- **Reliable rendering:** waits for fonts, lazy-loaded images, a CSS selector, or a JS ready flag
+- **Reliable rendering:** waits for fonts, lazy-loaded images, a CSS selector, a JS flag or expression
+- **Self-contained input:** HTML plus its CSS, fonts and images in one call, served from memory
+- **Diagnostics:** a report of failed resources and script errors on every render; optional strict mode
+- **Browser environment:** viewport, locale, time zone, colour scheme, device scale factor
+- **Print control:** CSS `@page` sizes and margins, tagged PDFs, bookmarks from headings
 - **Edit PDFs:** merge, split, extract, rotate, delete and reorder pages; set metadata; compress
 - **Stamps and watermarks** from text, images or HTML
 - **Conversion:** images → PDF, PDF → PNG/JPEG, text extraction

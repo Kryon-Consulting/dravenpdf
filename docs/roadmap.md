@@ -39,6 +39,22 @@ through it. CI is disabled for now (manual runs only), so the image has not been
 To do: visual regression tests, a first tagged release, publishing (PyPI or an
 internal index, container registry).
 
+## Post-M6 features ☑
+From the feature review (in the order they were built):
+- Guard fixes: WebSockets are checked like HTTP; a failed guard fetch aborts the
+  request instead of hanging the render.
+- Render reports (`doc.render_report`) and strict mode (`fail_on_resource_errors`,
+  `fail_on_page_errors`); HTTP count headers.
+- HTML plus in-memory asset bundles (`from_html(assets=...)`, `/v1/render/bundle`).
+- Browser environment: viewport, device scale factor, locale, time zone, colour
+  scheme, reduced motion.
+- CSS `@page` size and margins, tagged PDFs and heading outlines,
+  `wait_for_expression`, and the Python-only `prepare` hook.
+
+Not done yet: rendering pages behind a login (cookies, storage state, per-origin
+headers). It needs a short design first: headers must be added per origin inside the
+guard's fetch and dropped on cross-origin redirects, and secrets kept out of logs.
+
 ## Later / out of scope for now
 - Digital signatures (`pyhanko`), form filling, encryption and passwords (pikepdf)
 - PDF/A (would need Ghostscript, which is AGPL; see D5)

@@ -84,7 +84,16 @@ class RenderOptions(_Model):
     width: str | None = None
     height: str | None = None
     landscape: bool = False
-    margins: Margins = Field(default_factory=Margins)
+    margins: Margins | None = Field(default_factory=Margins)
+    """Page margins. None sends no margins, leaving them to CSS ``@page`` rules (an
+    explicit ``@page { margin }`` wins over this setting either way)."""
+    prefer_css_page_size: bool = False
+    """Use the page size from CSS ``@page { size }`` instead of ``paper``/``width``."""
+    tagged: bool = False
+    """Write a tagged PDF (structure tree for screen readers). Not a PDF/UA guarantee."""
+    outline: bool = False
+    """Add bookmarks built from the document's headings. Implies ``tagged``: Chromium
+    builds the outline from the tag structure and silently skips it otherwise."""
     scale: float = Field(default=1.0, ge=0.1, le=2.0)
     print_background: bool = True
     media: MediaType = "print"
@@ -94,6 +103,8 @@ class RenderOptions(_Model):
     wait_until: WaitUntil = "networkidle"
     wait_for_selector: str | None = None
     wait_for_ready_flag: bool = False
+    wait_for_expression: str | None = Field(default=None, min_length=1, max_length=10_000)
+    """JavaScript expression (or function) polled until it returns something truthy."""
     timeout_ms: int = Field(default=30_000, gt=0, le=MAX_TIMEOUT_MS)
     fail_on_resource_errors: bool = False
     """Fail if any image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx."""
@@ -177,11 +188,17 @@ class RenderOptions(_Model):
         """Keyword arguments for Playwright's ``page.pdf()``."""
         kwargs: dict[str, Any] = {
             "landscape": self.landscape,
-            "margin": self.margins.model_dump(),
             "scale": self.scale,
             "print_background": self.print_background,
-            "prefer_css_page_size": False,
+            "prefer_css_page_size": self.prefer_css_page_size,
         }
+        if self.margins is not None:
+            kwargs["margin"] = self.margins.model_dump()
+        # Only sent when on, so older Playwright versions without them still work.
+        if self.tagged or self.outline:
+            kwargs["tagged"] = True
+        if self.outline:
+            kwargs["outline"] = True
         if self.width is not None:
             kwargs["width"] = self.width
             kwargs["height"] = self.height
