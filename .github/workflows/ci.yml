@@ -1,9 +1,12 @@
 name: CI
 
+# Disabled for now: runs only when started by hand (Actions tab -> CI -> Run workflow).
+# To turn it back on, add under `on:`
+#   push:
+#     branches: [main]
+#   pull_request:
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
