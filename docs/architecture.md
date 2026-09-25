@@ -51,7 +51,9 @@ pdf/
 │   └── server/                 # needs the [server] extra
 │       ├── app.py              # create_app(): lifespan starts/stops BrowserPool
 │       ├── config.py           # Settings (env prefix DRAVENPDF_)
-│       ├── deps.py             # API key check, shared renderer dependency
+│       ├── deps.py             # API key check, uploads, PDF/ZIP responses
+│       ├── middleware.py       # request ids, body size limit
+│       ├── metrics.py          # Prometheus registry
 │       ├── errors.py           # maps dravenpdf.errors → HTTP responses
 │       ├── schemas.py          # request/response models
 │       └── routes/
@@ -146,11 +148,28 @@ save-and-reopen their result (`pages._detach`) before returning it.
 - **Compression** lives in `PdfDocument.save(compress=True)`: pikepdf object
   streams, stream compression, and removing unused objects. No Ghostscript.
 
+### `cli.py`
+Typer app, entry point `dravenpdf` (and `python -m dravenpdf`). It only parses
+arguments, converts 1-based page strings with `parse_page_ranges`, and calls
+`Renderer` / `PdfDocument`. `main()` turns `DravenPdfError` into a one-line message.
+
 ### `server/`
-Covered in [http-api.md](http-api.md). `create_app()` builds the app. Its
-lifespan starts a single `BrowserPool` per worker process, and routes get the
-renderer through a dependency. Route handlers only parse the request, call the
-library, and stream the result back.
+Endpoints are in [http-api.md](http-api.md).
+- **`app.py`**: `create_app(settings=None, renderer=None)`. The lifespan creates and
+  starts one `AsyncRenderer` per worker process (tests can pass their own renderer).
+- **`config.py`**: `Settings` from `DRAVENPDF_*` variables; refuses to build without
+  an API key unless auth is disabled.
+- **`middleware.py`**: pure ASGI. `RequestIdMiddleware` (outermost) sets and logs
+  `X-Request-ID`; `BodyLimitMiddleware` answers 413 both for a large Content-Length
+  and for streamed bodies that grow too big (it replaces whatever the app replied).
+- **`deps.py`**: API key check, timeout clamping, PDF upload reading (sniffs
+  `%PDF-`), and PDF/ZIP responses. CPU-bound pikepdf/pdfium work runs in
+  `asyncio.to_thread`.
+- **`errors.py`**: the only place error codes become HTTP statuses. Unexpected
+  exceptions return 500 with the request ID and no internals.
+- **`metrics.py`**: a Prometheus registry per app, plus a collector reading the pool.
+- **`routes/`**: `render.py` (JSON), `documents.py` and `convert.py` (multipart),
+  `health.py`. Handlers parse, call the library, and return the result.
 
 ## Data flow: `POST /v1/render/html`
 

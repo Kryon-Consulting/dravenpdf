@@ -1,0 +1,13 @@
+services:
+  dravenpdf:
+    build: .
+    image: dravenpdf:latest
+    init: true            # reaps Chromium child processes
+    ports:
+      - "8000:8000"
+    environment:
+      DRAVENPDF_API_KEY: ${DRAVENPDF_API_KEY:?set DRAVENPDF_API_KEY}
+      DRAVENPDF_MAX_CONCURRENCY: "4"
+      DRAVENPDF_WORKERS: "1"
+      # DRAVENPDF_ALLOWED_HOSTS: "cdn.example.com,*.example.org"
+    restart: unless-stopped

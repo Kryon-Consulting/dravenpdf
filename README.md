@@ -7,10 +7,8 @@ dravenpdf renders HTML, URLs and Jinja2 templates to PDF with headless Chromium
 web fonts, SVG and JavaScript all work. You can then merge, split, rotate, stamp
 and compress the PDFs, convert between PDFs and images, and extract text.
 
-> **Status:** early development. The design is complete (see [`docs/`](docs/));
-> the Python library works (rendering, templates, page operations, stamps, images,
-> text); the CLI and HTTP service are next.
-> See the [roadmap](docs/roadmap.md).
+> **Status:** pre-release. The library, CLI and HTTP service work and are tested;
+> packaging and a first release are next. See the [roadmap](docs/roadmap.md).
 
 ## Features
 
@@ -72,7 +70,9 @@ PdfDocument.merge([PdfDocument.open("a.pdf"), PdfDocument.open("b.pdf")]).save("
 
 ```bash
 dravenpdf render page.html -o page.pdf --paper Letter --landscape
+dravenpdf template invoice.html --data invoice.json -o invoice.pdf
 dravenpdf merge a.pdf b.pdf -o ab.pdf
+dravenpdf stamp ab.pdf --text CONFIDENTIAL -o stamped.pdf
 dravenpdf images report.pdf --dpi 150 -o pages/
 ```
 
@@ -80,7 +80,8 @@ dravenpdf images report.pdf --dpi 150 -o pages/
 
 ```bash
 docker build -t dravenpdf .
-docker run -p 8000:8000 -e DRAVENPDF_API_KEY=change-me dravenpdf
+docker run --init -p 8000:8000 -e DRAVENPDF_API_KEY=change-me dravenpdf
+# or without Docker: DRAVENPDF_API_KEY=change-me dravenpdf serve
 
 curl -X POST http://localhost:8000/v1/render/html \
   -H "X-API-Key: change-me" -H "Content-Type: application/json" \

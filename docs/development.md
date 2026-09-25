@@ -27,7 +27,6 @@ uv run playwright install chromium
 | Type check | `uv run mypy src` |
 | Unit tests (no browser) | `uv run pytest -m "not browser"` |
 | All tests | `uv run pytest` |
-| Update visual reference images | `uv run pytest tests/visual --update-snapshots` |
 | Run the service | `DRAVENPDF_API_KEY=dev uv run uvicorn dravenpdf.server.app:create_app --factory --reload` |
 | Build the Docker image | `docker build -t dravenpdf .` |
 
@@ -39,11 +38,13 @@ A `Makefile` wraps these (`make lint`, `make test`, `make serve`, `make docker`)
   (with a stubbed DNS lookup), and all `document/` operations on fixture PDFs.
 - `tests/integration/` is marked `@pytest.mark.browser`. It renders real HTML
   and checks page count, page size and extracted text.
-- `tests/visual/` renders fixtures to PNG with pypdfium2 and compares them with
-  reference images using a small pixel tolerance. Update the references only on
-  purpose and review the image diffs.
+- `tests/visual/` (planned, M7) will render fixtures to PNG with pypdfium2 and compare
+  them with reference images using a small pixel tolerance.
 - `tests/server/` uses FastAPI's `TestClient`, covering auth, error mapping,
-  size limits and each endpoint.
+  size limits and each endpoint. `test_api.py` uses a `FakeRenderer` (no browser);
+  `test_api_browser.py` runs the real one.
+- `tests/unit/test_cli.py` and `tests/integration/test_cli_render.py` drive the CLI
+  through Typer's `CliRunner`.
 
 Tests must not hit the public internet. URL rendering tests use a local HTTP
 server fixture (`server` in `tests/conftest.py`) and the `local_renderer` fixture,

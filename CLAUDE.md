@@ -18,9 +18,9 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-M1–M4 are done: rendering (`render/`), page operations, stamps, images, text and
-templates (`document/`, `render/templates.py`). The library is feature-complete for
-now; next is M5 (CLI), then M6 (HTTP service). The build order is in `docs/roadmap.md`.
+M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
+HTTP service (`server/`). M7 (packaging) is partly done: Dockerfile and compose exist
+and CI builds the image; visual tests and a first release remain. The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -62,6 +62,10 @@ Full reasoning is in `docs/decisions.md`.
 - Call pdfium (pypdfium2) only through `document/_pdfium.open_pdf()`: pdfium is not
   thread-safe and the server runs PDF work in threads.
 - New stamp kinds go through `stamp._stamp_each`/`_place`, which handle page rotation.
+- Server: map new error codes to statuses only in `server/errors.py`; run CPU-bound
+  PDF work with `asyncio.to_thread`; keep route handlers thin. Tests in `tests/server/`
+  use a `FakeRenderer` so they don't need Chromium.
+- CLI and HTTP page arguments are 1-based strings; the Python API is 0-based.
 - Raise the exceptions from `dravenpdf.errors`, not bare `Exception`s. The
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the
@@ -82,7 +86,7 @@ uv run pytest                        # full suite
 # If the installed Chromium doesn't match Playwright's version (e.g. a preinstalled
 # one), point at it: DRAVENPDF_CHROMIUM_PATH=/path/to/chrome uv run pytest
 make check                           # lint + typecheck + unit tests
-# once the CLI (M5) and server (M6) exist:
-uv run dravenpdf render in.html -o out.pdf
+uv run dravenpdf render in.html -o out.pdf   # CLI; see `dravenpdf --help`
+DRAVENPDF_API_KEY=dev uv run dravenpdf serve  # HTTP service on :8000, docs at /docs
 DRAVENPDF_API_KEY=dev uv run uvicorn dravenpdf.server.app:create_app --factory --reload
 ```

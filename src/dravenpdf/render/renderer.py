@@ -79,6 +79,10 @@ class AsyncRenderer:
         self._allow_private = allow_private_network
         self._on_blocked = on_blocked
 
+    @property
+    def is_running(self) -> bool:
+        return self.pool.is_running
+
     async def start(self) -> None:
         if self._owns_pool:
             await self.pool.start()
