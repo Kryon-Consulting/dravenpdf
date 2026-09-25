@@ -20,6 +20,7 @@ from dravenpdf.errors import (
 )
 from dravenpdf.options import HeaderFooter, Margins, RenderOptions, Viewport
 from dravenpdf.render import AsyncRenderer, BrowserPool, Renderer, RequestGuard
+from dravenpdf.render.auth import Cookie, RenderAuth, StorageState
 from dravenpdf.render.report import FailedRequest, HttpError, RenderReport
 
 try:
@@ -32,6 +33,7 @@ __all__ = [
     "AsyncRenderer",
     "BlockedRequestError",
     "BrowserPool",
+    "Cookie",
     "DravenPdfError",
     "FailedRequest",
     "HeaderFooter",
@@ -43,12 +45,14 @@ __all__ = [
     "PdfDocument",
     "PdfOperationError",
     "PoolExhaustedError",
+    "RenderAuth",
     "RenderError",
     "RenderOptions",
     "RenderReport",
     "RenderTimeoutError",
     "Renderer",
     "RequestGuard",
+    "StorageState",
     "TemplateError",
     "Viewport",
     "__version__",

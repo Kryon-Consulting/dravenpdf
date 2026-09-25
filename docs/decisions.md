@@ -33,7 +33,7 @@ disabled.
 The response body is the result. No job queue, callbacks or result storage.
 Big documents are handled by raising timeouts and size limits.
 
-## D8 – Out of scope for now
+## D8 – Out of scope for now (superseded by D12)
 Digital signatures, form filling, encryption and passwords. If added later:
 `pyhanko` for signatures, pikepdf for encryption and forms.
 
@@ -46,3 +46,23 @@ It could be added later as an optional lightweight backend.
 Every render gets a fresh browser context, and every request the page makes is
 checked by the SSRF guard (block `file://`, private, loopback, link-local and
 metadata IPs; optional host allowlist). Jinja2 runs sandboxed with autoescaping.
+
+## D11 – Page credentials are per render, per exact origin
+`RenderAuth` is separate from `RenderOptions` (layout) and from the service's own
+`X-API-Key`. Cookies and storage state use the browser's own mechanisms (installed in
+the fresh context before the first navigation) rather than a `Cookie` header, so the
+browser's cookie rules apply. Extra headers are added by the guard per hop and only for
+their exact origin; they are rebuilt on every redirect hop, `Authorization` is dropped
+when a redirect leaves the original origin, and cookies after the first hop come from
+the jar for the new URL. Values are `SecretStr` and Playwright's call logs (which list
+headers) are stripped from logs and errors.
+
+## D12 – Encryption, forms and signatures are in scope (replaces D8)
+- **Encryption:** pikepdf (AES-256). Permission flags are advisory; the docs say so.
+- **Forms:** fill and flatten existing AcroForms with pikepdf. Creating fillable
+  forms from HTML is not planned. XFA-only forms are refused.
+- **Signatures:** pyHanko (MIT). Private keys stay on the server: the service loads
+  configured keys at startup and requests refer to them by name; keys are never
+  uploaded. Signatures are advanced electronic signatures (PAdES baseline, optional
+  RFC 3161 timestamp). EU qualified signatures need certified signing hardware and a
+  qualified provider and are not a goal.

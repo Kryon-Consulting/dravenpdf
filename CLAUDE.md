@@ -21,8 +21,8 @@ libraries like IronPDF, but uses open-source parts:
 M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
 HTTP service (`server/`). After M6: guard fixes (WebSockets, failed fetches), render
 reports and strict mode, in-memory asset bundles, browser environment options, CSS
-page size, tagged PDFs/outlines, expression waits and `prepare` hooks (see
-`docs/roadmap.md`). Rendering behind a login is not built yet and needs a design first.
+page size, tagged PDFs/outlines, expression waits, `prepare` hooks, and rendering
+behind a login (`RenderAuth`; see `docs/roadmap.md` and D11 in `docs/decisions.md`).
 M7 (packaging) is partly done: Dockerfile and compose exist but the Docker image has
 never been built; visual tests and a first release remain.
 Update that file (and the status line in `README.md`) as milestones land.
@@ -45,7 +45,10 @@ Update that file (and the status line in `README.md`) as milestones land.
 3. **No PDF/A and no Ghostscript** (AGPL). Do not add Ghostscript as a dependency.
 4. HTTP auth is a **single API key** in the `X-API-Key` header.
 5. The HTTP API is **synchronous**: the response body is the result. No job queue.
-6. **Out of scope for now:** digital signatures, form filling, encryption and passwords.
+6. **Signing keys live on the server** (configured files or key services); requests name
+   a key and never upload private keys. Signatures are advanced electronic signatures;
+   EU *qualified* signatures (eIDAS, certified signing hardware) are not a goal.
+7. **Forms:** fill and flatten existing PDF forms only; no creating fillable forms from HTML.
 
 Full reasoning is in `docs/decisions.md`.
 
@@ -79,6 +82,12 @@ Full reasoning is in `docs/decisions.md`.
   render deadline can't leak a half-created browser or context.
 - Build many-part outputs lazily (`PdfDocument.iter_split`) and don't keep earlier
   parts referenced; note that `enumerate()` holds its previous item (see the split route).
+- Credentials (`RenderAuth`) must never reach logs, exceptions, reports, metrics or
+  response headers. Keep values as `SecretStr` until the moment they're handed to
+  Playwright, and pass any Playwright error text through `render/_redact.safe_message`
+  first: its call log lists request headers. Per-hop header rules live in
+  `RequestGuard.hop_headers`; redirect tests in `tests/integration/test_auth.py` fail if
+  credentials follow a redirect to another origin.
 - Every guard route handler must answer the browser on every path (fulfill, continue
   or abort), including when its own fetch fails; an unanswered route hangs the render.
   New kinds of browser traffic (like WebSockets) need their own guard route.

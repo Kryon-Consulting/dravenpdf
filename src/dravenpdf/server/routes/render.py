@@ -46,9 +46,11 @@ async def render_html(body: RenderHtmlRequest, request: Request) -> Response:
 
 @router.post("/url", response_class=Response, responses=PDF_RESPONSE)
 async def render_url(body: RenderUrlRequest, request: Request) -> Response:
-    """Render a public web page."""
+    """Render a web page. `auth` supplies cookies, storage state and per-origin
+    headers for pages behind a login; they apply to this render only."""
     options = clamp_timeout(body.options, settings_of(request))
-    doc = await timed(request, "url", renderer_of(request).from_url(body.url, options))
+    work = renderer_of(request).from_url(body.url, options, auth=body.auth)
+    doc = await timed(request, "url", work)
     return await pdf_response(doc, body.filename, body.post)
 
 

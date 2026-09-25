@@ -558,3 +558,59 @@ def test_bundle_bad_requests(
     assert response.status_code == 400, response.text
     assert message in response.json()["error"]["message"]
     assert fake.calls == []  # rejected before any render
+
+
+# ---------------------------------------------------------------- page credentials
+
+
+def test_render_url_passes_auth(client: TestClient, fake: FakeRenderer) -> None:
+    response = client.post(
+        "/v1/render/url",
+        json={
+            "url": "https://app.example.com/report",
+            "auth": {
+                "cookies": [{"name": "sid", "value": "s3cret", "url": "https://app.example.com"}],
+                "headers": {"https://api.example.com": {"Authorization": "Bearer s3cret"}},
+                "storage_state": {"origins": [{"origin": "https://app.example.com",
+                                               "localStorage": [{"name": "t", "value": "s3"}]}]},
+            },
+        },
+        headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert auth.cookies[0].name == "sid"
+    assert auth.headers_for("https://api.example.com/x") == {"authorization": "Bearer s3cret"}
+    assert "s3cret" not in str(response.headers)
+
+
+@pytest.mark.parametrize(
+    ("auth", "message"),
+    [
+        ({"headers": {"https://a.example": {"X": "s3cret\r\nX-Evil: 1"}}}, "control"),
+        ({"headers": {"https://a.example": {"Cookie": "sid=s3cret"}}}, "use cookies"),
+        ({"headers": {"https://a.example/path": {"X": "s3cret"}}}, "origin"),
+        ({"storage_state": "/var/state.json"}, "storage_state"),
+        ({"cookies": [{"name": "sid", "value": "s3cret"}]}, "url or domain"),
+    ],
+)
+def test_render_url_rejects_bad_auth_without_echoing_it(
+    client: TestClient, fake: FakeRenderer, auth: dict[str, object], message: str
+) -> None:
+    response = client.post(
+        "/v1/render/url", json={"url": "https://a.example/", "auth": auth}, headers=AUTH
+    )
+
+    assert response.status_code == 400
+    assert message in response.json()["error"]["message"]
+    assert "s3cret" not in response.text
+    assert fake.calls == []
+
+
+def test_auth_only_on_the_url_endpoint(client: TestClient) -> None:
+    response = client.post(
+        "/v1/render/html", json={"html": "x", "auth": {"cookies": []}}, headers=AUTH
+    )
+
+    assert response.status_code == 400

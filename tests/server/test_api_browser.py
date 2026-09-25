@@ -115,3 +115,27 @@ def test_render_bundle(live: TestClient) -> None:
     assert "Bundled CSS-OK" in text
     assert "IMG-OK" in text
     assert response.headers["x-dravenpdf-resource-errors"] == "1"  # img/missing.png
+
+
+def test_render_url_behind_a_login(server: Server, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    origin = server.url("", host="localhost")
+    body = {
+        "url": server.url("/auth/cookie-page"),
+        "auth": {
+            "cookies": [{"name": "session", "value": "s3cret-alice", "url": origin}],
+            "headers": {origin: {"X-Tenant": "acme"}},
+        },
+    }
+
+    with make_client(Settings(api_key=API_KEY, allowed_hosts="localhost")) as c:
+        logged_in = c.post("/v1/render/url", json=body, headers=AUTH)
+        anonymous = c.post("/v1/render/url", json={"url": body["url"]}, headers=AUTH)
+
+    assert logged_in.status_code == 200, logged_in.text
+    assert "WELCOME alice" in pdf_text(PdfDocument.from_bytes(logged_in.content))[0]
+    assert "LOGIN REQUIRED" in pdf_text(PdfDocument.from_bytes(anonymous.content))[0]
+    assert "s3cret-alice" not in str(logged_in.headers)
+    assert "s3cret-alice" not in caplog.text

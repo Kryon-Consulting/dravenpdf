@@ -51,12 +51,16 @@ From the feature review (in the order they were built):
 - CSS `@page` size and margins, tagged PDFs and heading outlines,
   `wait_for_expression`, and the Python-only `prepare` hook.
 
-Not done yet: rendering pages behind a login (cookies, storage state, per-origin
-headers). It needs a short design first: headers must be added per origin inside the
-guard's fetch and dropped on cross-origin redirects, and secrets kept out of logs.
+- Rendering pages behind a login: `RenderAuth` (cookies, Playwright storage state,
+  headers per exact origin) for `from_url`, the sync `Renderer` and
+  `POST /v1/render/url`. This also fixed the guard forwarding the first URL's cookies
+  to a cross-origin redirect target (see D11).
+
+## M8 – Encryption, forms, signatures ◐
+Decided in D12. Order: encryption and passwords, then form filling and flattening,
+then digital signatures (keys configured on the server) and verification.
 
 ## Later / out of scope for now
-- Digital signatures (`pyhanko`), form filling, encryption and passwords (pikepdf)
 - PDF/A (would need Ghostscript, which is AGPL; see D5)
 - Async job queue with callbacks (see D7)
 - WeasyPrint as a lightweight backend without a browser

@@ -18,7 +18,9 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.errors import AssetError, BlockedRequestError, RenderError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
+from dravenpdf.render._redact import safe_message
 from dravenpdf.render.assets import AssetBundle
+from dravenpdf.render.auth import RenderAuth
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
 from dravenpdf.render.pool import BrowserPool
 from dravenpdf.render.report import ReportCollector
@@ -108,13 +110,17 @@ class AsyncRenderer:
         await self.close()
 
     def _new_guard(
-        self, file_root: Path | None = None, bundle: AssetBundle | None = None
+        self,
+        file_root: Path | None = None,
+        bundle: AssetBundle | None = None,
+        auth: RenderAuth | None = None,
     ) -> RequestGuard:
         return RequestGuard(
             allowed_hosts=self._allowed_hosts,
             allow_private_network=self._allow_private,
             file_root=file_root,
             bundle=bundle,
+            auth=auth,
         )
 
     # ------------------------------------------------------------------ public API
@@ -157,18 +163,30 @@ class AsyncRenderer:
         return await self._render(load, opts, prepare=prepare)
 
     async def from_url(
-        self, url: str, options: RenderOptions | None = None, *, prepare: PageHook | None = None
+        self,
+        url: str,
+        options: RenderOptions | None = None,
+        *,
+        auth: RenderAuth | None = None,
+        prepare: PageHook | None = None,
     ) -> PdfDocument:
-        """Render a web page. The URL and everything it loads go through the guard."""
+        """Render a web page. The URL and everything it loads go through the guard.
+
+        ``auth`` logs the render in: its cookies and storage state are put into this
+        render's fresh browser context before the first navigation, and its headers
+        are sent only to their exact origins (see :class:`RenderAuth`). Nothing
+        carries over to other renders.
+        """
         opts = options or RenderOptions()
-        await self._new_guard().check(url)
+        guard = self._new_guard(auth=auth)
+        await guard.check(url)
 
         async def load(page: Page) -> None:
             response = await page.goto(url, wait_until=opts.wait_until)
             if response is not None and response.status >= 400:
                 raise RenderError(f"{url} returned HTTP {response.status}")
 
-        return await self._render(load, opts, prepare=prepare)
+        return await self._render(load, opts, guard, prepare=prepare, auth=auth)
 
     async def from_file(
         self,
@@ -242,8 +260,13 @@ class AsyncRenderer:
         guard: RequestGuard | None = None,
         *,
         prepare: PageHook | None = None,
+        auth: RenderAuth | None = None,
     ) -> PdfDocument:
         guard = guard or self._new_guard()
+        context_options = opts.to_context_kwargs()
+        storage_state = auth.playwright_storage_state() if auth is not None else None
+        if storage_state is not None:
+            context_options["storage_state"] = storage_state  # localStorage, per origin
         collector = ReportCollector()
         # One deadline for the whole render: waiting for a browser slot, launching
         # Chromium, creating the context and page, loading, waiting and printing.
@@ -256,10 +279,13 @@ class AsyncRenderer:
                     deadline=deadline,
                     service_workers="block",
                     accept_downloads=False,
-                    **opts.to_context_kwargs(),
+                    **context_options,
                 ) as ctx,
             ):
                 try:
+                    if auth is not None and auth.all_cookies():
+                        # Before any page exists, so even the first request carries them.
+                        await ctx.add_cookies(auth.playwright_cookies())  # type: ignore[arg-type]
                     await guard.install(ctx)
                     page = await ctx.new_page()
                     collector.attach(page)
@@ -284,7 +310,7 @@ class AsyncRenderer:
                             guard.raise_if_blocked()
                         except BlockedRequestError as blocked:
                             raise blocked from exc
-                    raise RenderError(f"render failed: {exc.message}") from exc
+                    raise RenderError(f"render failed: {safe_message(exc)}") from exc
         except (TimeoutError, PlaywrightTimeoutError) as exc:
             raise RenderTimeoutError(
                 f"render did not finish within {opts.timeout_ms} ms",
