@@ -49,8 +49,31 @@ with Renderer() as r:
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
 | `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot and launching Chromium |
+| `fail_on_resource_errors` | `bool` | `False` | Raise `IncompleteRenderError` if an image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx |
+| `fail_on_page_errors` | `bool` | `False` | Raise `IncompleteRenderError` if the page throws an uncaught JavaScript exception |
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
+
+### Render reports
+
+Every rendered document carries `doc.render_report`, a `RenderReport` of what went
+wrong while rendering, even when the render succeeded:
+
+```python
+doc = await r.from_url("https://example.com/report")
+report = doc.render_report
+report.ok                    # False if anything failed, errored or was blocked
+report.http_errors           # [HttpError(url, status, resource_type)] – sub-resources with 4xx/5xx
+report.failed_requests       # [FailedRequest(url, reason, resource_type)] – refused, DNS, aborted
+report.page_errors           # ["boom", ...] – uncaught JavaScript exceptions
+report.console_errors        # console.error() messages (don't affect .ok)
+report.blocked               # [(url, reason)] – refused by the SSRF guard
+report.summary()             # short text, e.g. for logs
+```
+
+Each problem URL is listed once. Documents made from a rendered one (`rotate`, `merge`,
+...) have `render_report = None`. Set `fail_on_resource_errors` / `fail_on_page_errors`
+to turn problems into an `IncompleteRenderError` (its `.report` has the details).
 
 ## Working with PDFs
 

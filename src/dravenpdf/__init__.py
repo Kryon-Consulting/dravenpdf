@@ -8,6 +8,7 @@ from dravenpdf.document import PdfDocument
 from dravenpdf.errors import (
     BlockedRequestError,
     DravenPdfError,
+    IncompleteRenderError,
     InvalidPdfError,
     LimitExceededError,
     PdfOperationError,
@@ -18,6 +19,7 @@ from dravenpdf.errors import (
 )
 from dravenpdf.options import HeaderFooter, Margins, RenderOptions
 from dravenpdf.render import AsyncRenderer, BrowserPool, Renderer, RequestGuard
+from dravenpdf.render.report import FailedRequest, HttpError, RenderReport
 
 try:
     __version__ = version("dravenpdf")
@@ -29,7 +31,10 @@ __all__ = [
     "BlockedRequestError",
     "BrowserPool",
     "DravenPdfError",
+    "FailedRequest",
     "HeaderFooter",
+    "HttpError",
+    "IncompleteRenderError",
     "InvalidPdfError",
     "LimitExceededError",
     "Margins",
@@ -38,6 +43,7 @@ __all__ = [
     "PoolExhaustedError",
     "RenderError",
     "RenderOptions",
+    "RenderReport",
     "RenderTimeoutError",
     "Renderer",
     "RequestGuard",

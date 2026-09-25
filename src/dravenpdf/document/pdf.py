@@ -7,7 +7,7 @@ import io
 from collections.abc import Iterable, Iterator, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import pikepdf
 
@@ -19,6 +19,9 @@ from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import InvalidPdfError
 from dravenpdf.options import Margins, PaperSize, RenderOptions
+
+if TYPE_CHECKING:
+    from dravenpdf.render.report import RenderReport
 
 
 class HtmlRenderer(Protocol):
@@ -63,6 +66,9 @@ class PdfDocument:
 
     def __init__(self, pdf: pikepdf.Pdf) -> None:
         self._pdf = pdf
+        self.render_report: RenderReport | None = None
+        """Set on documents returned by a renderer: what failed while rendering.
+        Documents derived from this one (rotate, merge, ...) don't carry it."""
 
     # ------------------------------------------------------------------ loading
 

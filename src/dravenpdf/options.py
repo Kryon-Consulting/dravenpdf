@@ -78,6 +78,10 @@ class RenderOptions(_Model):
     wait_for_selector: str | None = None
     wait_for_ready_flag: bool = False
     timeout_ms: int = Field(default=30_000, gt=0, le=MAX_TIMEOUT_MS)
+    fail_on_resource_errors: bool = False
+    """Fail if any image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx."""
+    fail_on_page_errors: bool = False
+    """Fail if the page throws an uncaught JavaScript exception."""
 
     @field_validator("width", "height")
     @classmethod

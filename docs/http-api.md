@@ -104,6 +104,12 @@ before it is rendered. ZIP responses (`split`, `pdf-to-images`) stop at
 Every response has an `X-Request-ID` header (the client's own, if it sent one), and
 every request is logged with it.
 
+Render responses also carry counts from the render report:
+`X-DravenPdf-Resource-Errors` (failed loads and 4xx/5xx sub-resources),
+`X-DravenPdf-Page-Errors` (uncaught JavaScript exceptions) and `X-DravenPdf-Blocked`.
+Details are in the server log. To fail instead, set `fail_on_resource_errors` or
+`fail_on_page_errors` in `options`.
+
 ## Errors
 
 Error responses are JSON: `{"error": {"code": str, "message": str}}`. The mapping
@@ -120,6 +126,7 @@ lives in `src/dravenpdf/server/errors.py`.
 | 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
+| 422 | `render_incomplete` | A strict render (`fail_on_resource_errors` / `fail_on_page_errors`) found problems; the message lists them |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |
 | 504 | `render_timeout` | Render exceeded `timeout_ms` (time queued for a browser or launching one counts) |
 | 500 | `internal_error` | Anything else; the message has the request ID, details are only in the log |

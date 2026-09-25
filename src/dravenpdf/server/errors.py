@@ -23,6 +23,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "limit_exceeded": 422,
     "blocked_request": 422,
     "render_failed": 422,
+    "render_incomplete": 422,
     "busy": 503,
     "render_timeout": 504,
     "internal_error": 500,

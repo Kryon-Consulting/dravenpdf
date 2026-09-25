@@ -20,6 +20,7 @@ from dravenpdf.errors import BlockedRequestError, RenderError, RenderTimeoutErro
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
 from dravenpdf.render.pool import BrowserPool
+from dravenpdf.render.report import ReportCollector
 from dravenpdf.render.templates import render_template
 from dravenpdf.render.waits import wait_until_ready
 
@@ -193,6 +194,7 @@ class AsyncRenderer:
         self, load: Loader, opts: RenderOptions, guard: RequestGuard | None = None
     ) -> PdfDocument:
         guard = guard or self._new_guard()
+        collector = ReportCollector()
         # One deadline for the whole render: waiting for a browser slot, launching
         # Chromium, creating the context and page, loading, waiting and printing.
         loop = asyncio.get_running_loop()
@@ -207,12 +209,17 @@ class AsyncRenderer:
                 try:
                     await guard.install(ctx)
                     page = await ctx.new_page()
+                    collector.attach(page)
                     page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
                     await page.emulate_media(media=opts.media)
                     await load(page)
                     await wait_until_ready(page, opts)
                     if self._on_blocked == "fail":
                         guard.raise_if_blocked()
+                    collector.check(
+                        fail_on_resource_errors=opts.fail_on_resource_errors,
+                        fail_on_page_errors=opts.fail_on_page_errors,
+                    )
                     data = await page.pdf(**opts.to_pdf_kwargs())
                 except PlaywrightError as exc:
                     if isinstance(exc, PlaywrightTimeoutError):
@@ -228,6 +235,10 @@ class AsyncRenderer:
                 f"render did not finish within {opts.timeout_ms} ms",
                 timeout_ms=opts.timeout_ms,
             ) from exc
-        if guard.blocked:
-            logger.info("rendered without %d blocked request(s)", len(guard.blocked))
-        return await asyncio.to_thread(PdfDocument.from_bytes, data)
+        report = collector.report
+        report.blocked = list(guard.blocked)
+        if not report.ok:
+            logger.info("rendered with problems: %s", report.summary())
+        doc = await asyncio.to_thread(PdfDocument.from_bytes, data)
+        doc.render_report = report
+        return doc

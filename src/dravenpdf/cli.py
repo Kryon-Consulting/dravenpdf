@@ -51,6 +51,9 @@ def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
 
 
 def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> None:
+    report = doc.render_report
+    if report is not None and not report.ok:
+        typer.secho(f"warning: {report.summary()}", fg=typer.colors.YELLOW, err=True)
     data = doc.to_bytes(compress=compress)
     if str(output) == "-":
         sys.stdout.buffer.write(data)
@@ -104,6 +107,7 @@ def _render_options(
     wait_for_ready_flag: bool,
     timeout: int,
     media: str,
+    **extra: Any,
 ) -> RenderOptions:
     fields: dict[str, Any] = {
         "paper": paper,
@@ -113,6 +117,7 @@ def _render_options(
         "wait_for_ready_flag": wait_for_ready_flag,
         "timeout_ms": timeout * 1000,
         "media": media,
+        **extra,
     }
     if margin is not None:
         fields["margins"] = Margins(top=margin, right=margin, bottom=margin, left=margin)
@@ -160,13 +165,21 @@ def render(
         bool, typer.Option(help="Render without blocked resources instead of failing.")
     ] = False,
     compress: Annotated[bool, typer.Option(help="Compress the output.")] = False,
+    fail_on_resource_errors: Annotated[
+        bool, typer.Option(help="Fail if an image, stylesheet, font or fetch fails to load.")
+    ] = False,
+    fail_on_page_errors: Annotated[
+        bool, typer.Option(help="Fail if the page throws a JavaScript error.")
+    ] = False,
 ) -> None:
-    """Render an HTML file or a web page to PDF."""
+    """Render an HTML file or a web page to PDF. Load problems are printed as warnings."""
     if media not in ("print", "screen"):
         _fail("--media must be print or screen")
     options = _render_options(
         paper, landscape, margin, header, footer, wait_until, wait_for,
         wait_for_ready_flag, timeout, media,
+        fail_on_resource_errors=fail_on_resource_errors,
+        fail_on_page_errors=fail_on_page_errors,
     )  # fmt: skip
     with Renderer(
         allowed_hosts=allow_host,

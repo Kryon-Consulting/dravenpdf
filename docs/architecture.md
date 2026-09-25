@@ -85,6 +85,7 @@ custom width/height, orientation, margins, scale, header/footer HTML, page range
 DravenPdfError
 ├── RenderError
 │   ├── RenderTimeoutError
+│   ├── IncompleteRenderError   # strict render found missing resources / script errors
 │   └── BlockedRequestError     # guard refused a URL
 ├── TemplateError               # Jinja2 template not found / invalid / failed
 ├── InvalidPdfError             # input bytes are not a readable PDF
@@ -111,6 +112,11 @@ DravenPdfError
   and printing. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
+- **`report.py`**: `ReportCollector` listens to the page's `response`, `requestfailed`,
+  `pageerror` and `console` events and builds the `RenderReport` attached to each
+  rendered document (deduplicated: a 404 stylesheet that Chromium also aborts is listed
+  once; Chromium's own "Failed to load resource" console lines and guard blocks are
+  filtered). Before printing, the renderer calls `check()` for the strict options.
 - **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
   and `http(s)` only when the host resolves to a public IP (or is on the
   allowlist). It blocks private, loopback, link-local, CGNAT and multicast addresses,

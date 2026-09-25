@@ -13,9 +13,12 @@ from pydantic import ValidationError
 from conftest import pdf_text
 from dravenpdf import (
     BlockedRequestError,
+    HttpError,
+    IncompleteRenderError,
     PdfDocument,
     PoolExhaustedError,
     RenderError,
+    RenderReport,
     RenderTimeoutError,
     TemplateError,
 )
@@ -147,6 +150,7 @@ def test_validation_error_is_400(client: TestClient) -> None:
         (BlockedRequestError("no", url="http://10.0.0.1"), 422, "blocked_request"),
         (RenderError("HTTP 404"), 422, "render_failed"),
         (TemplateError("bad"), 400, "invalid_template"),
+        (IncompleteRenderError("missing", report=RenderReport()), 422, "render_incomplete"),
         (RuntimeError("boom"), 500, "internal_error"),
     ],
 )
@@ -465,3 +469,22 @@ def test_split_holds_one_part_at_a_time(
     assert response.status_code == 200
     assert len(zip_names(response.content)) == 6
     assert still_held == [0] * 6
+
+
+def test_render_report_headers(client: TestClient, fake: FakeRenderer) -> None:
+    fake.result.render_report = RenderReport(
+        http_errors=[HttpError("https://a.example/x.png", 404, "image")],
+        page_errors=["boom", "bang"],
+    )
+
+    response = client.post("/v1/render/html", json={"html": "<p>x</p>"}, headers=AUTH)
+
+    assert response.headers["x-dravenpdf-resource-errors"] == "1"
+    assert response.headers["x-dravenpdf-page-errors"] == "2"
+    assert response.headers["x-dravenpdf-blocked"] == "0"
+
+
+def test_non_render_responses_have_no_report_headers(client: TestClient) -> None:
+    response = client.post("/v1/pdf/compress", files={"file": upload(pdf_bytes())}, headers=AUTH)
+
+    assert "x-dravenpdf-resource-errors" not in response.headers
