@@ -13,6 +13,7 @@ from dravenpdf.errors import (
     PoolExhaustedError,
     RenderError,
     RenderTimeoutError,
+    TemplateError,
 )
 from dravenpdf.options import HeaderFooter, Margins, RenderOptions
 from dravenpdf.render import AsyncRenderer, BrowserPool, Renderer, RequestGuard
@@ -38,5 +39,6 @@ __all__ = [
     "RenderTimeoutError",
     "Renderer",
     "RequestGuard",
+    "TemplateError",
     "__version__",
 ]

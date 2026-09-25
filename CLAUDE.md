@@ -18,9 +18,9 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-M1 (skeleton), M2 (rendering core: `render/`) and M3 (`PdfDocument` page operations:
-`document/pdf.py`, `document/pages.py`) are done. Next is M4 (stamps, images, text,
-templates). The build order is in `docs/roadmap.md`.
+M1–M4 are done: rendering (`render/`), page operations, stamps, images, text and
+templates (`document/`, `render/templates.py`). The library is feature-complete for
+now; next is M5 (CLI), then M6 (HTTP service). The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -59,6 +59,9 @@ Full reasoning is in `docs/decisions.md`.
 - `PdfDocument` methods never modify `self`; they return a new document. Anything
   that copies pages between pikepdf PDFs must end with `pages._detach()` (see
   `docs/architecture.md`), or the result breaks once its source is garbage-collected.
+- Call pdfium (pypdfium2) only through `document/_pdfium.open_pdf()`: pdfium is not
+  thread-safe and the server runs PDF work in threads.
+- New stamp kinds go through `stamp._stamp_each`/`_place`, which handle page rotation.
 - Raise the exceptions from `dravenpdf.errors`, not bare `Exception`s. The
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the

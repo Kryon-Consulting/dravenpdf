@@ -44,6 +44,12 @@ class BlockedRequestError(RenderError):
         self.url = url
 
 
+class TemplateError(DravenPdfError):
+    """A Jinja2 template could not be found, parsed or rendered."""
+
+    code = "invalid_template"
+
+
 class InvalidPdfError(DravenPdfError):
     """Input bytes could not be read as a PDF."""
 
@@ -70,4 +76,5 @@ __all__ = [
     "PoolExhaustedError",
     "RenderError",
     "RenderTimeoutError",
+    "TemplateError",
 ]

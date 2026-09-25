@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from html import escape
 from os import PathLike
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
@@ -19,6 +20,7 @@ from dravenpdf.errors import BlockedRequestError, RenderError, RenderTimeoutErro
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
 from dravenpdf.render.pool import BrowserPool
+from dravenpdf.render.templates import render_template
 from dravenpdf.render.waits import wait_until_ready
 
 logger = logging.getLogger("dravenpdf.render")
@@ -149,6 +151,37 @@ class AsyncRenderer:
             await page.goto(url, wait_until=opts.wait_until)
 
         return await self._render(load, opts, self._new_guard(file_root=file.parent))
+
+    async def from_template(
+        self,
+        template: str,
+        data: Mapping[str, Any],
+        options: RenderOptions | None = None,
+        *,
+        template_dir: str | PathLike[str] | None = None,
+        base_url: str | None = None,
+    ) -> PdfDocument:
+        """Render a Jinja2 template (sandboxed, autoescaped) to PDF.
+
+        With ``template_dir``, ``template`` is a file name in that folder; relative
+        assets (CSS, images) resolve from the folder, and the page may load files from
+        it only. Without it, ``template`` is the template source. ``base_url`` makes
+        relative assets resolve against a web URL instead.
+        """
+        opts = options or RenderOptions()
+        html = await asyncio.to_thread(render_template, template, data, template_dir=template_dir)
+        if template_dir is None or base_url is not None:
+            return await self.from_html(html, opts, base_url=base_url)
+        folder = await asyncio.to_thread(Path(template_dir).resolve)
+        folder_url = folder.as_uri() + "/"
+
+        async def load(page: Page) -> None:
+            # Give the document a file:// address in the template folder, so relative
+            # asset URLs resolve there, then swap in the rendered HTML.
+            await page.goto(folder_url, wait_until="domcontentloaded")
+            await page.set_content(html, wait_until=opts.wait_until)
+
+        return await self._render(load, opts, self._new_guard(file_root=folder))
 
     # ------------------------------------------------------------------ internals
 

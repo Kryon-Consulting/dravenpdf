@@ -6,11 +6,27 @@ import io
 from collections.abc import Iterable, Sequence
 from os import PathLike
 from pathlib import Path
+from typing import Protocol
 
 import pikepdf
 
+from dravenpdf.document import images as image_ops
 from dravenpdf.document import pages as ops
+from dravenpdf.document import stamp as stamp_ops
+from dravenpdf.document import text as text_ops
+from dravenpdf.document.images import ImageFormat
+from dravenpdf.document.stamp import Position
 from dravenpdf.errors import InvalidPdfError, PdfOperationError
+from dravenpdf.options import Margins, PaperSize, RenderOptions
+
+
+class HtmlRenderer(Protocol):
+    """What stamp_html needs from a renderer (AsyncRenderer fits)."""
+
+    async def from_html(
+        self, html: str, options: RenderOptions | None = None, *, base_url: str | None = None
+    ) -> PdfDocument: ...
+
 
 # PdfDocument.metadata keys and the docinfo entries they map to.
 METADATA_KEYS: dict[str, str] = {
@@ -61,6 +77,21 @@ class PdfDocument:
     @classmethod
     def open(cls, path: str | PathLike[str]) -> PdfDocument:
         return cls.from_bytes(Path(path).read_bytes())
+
+    @classmethod
+    def from_images(
+        cls,
+        images: Sequence[bytes],
+        *,
+        paper: PaperSize | None = None,
+        landscape: bool = False,
+        margin: float = 0,
+    ) -> PdfDocument:
+        """One page per image. Without ``paper``, pages are the images' own size;
+        with it, images are fitted inside ``margin`` (points), keeping aspect ratio."""
+        return cls.from_bytes(
+            image_ops.images_to_pdf(images, paper=paper, landscape=landscape, margin=margin)
+        )
 
     @classmethod
     def merge(cls, documents: Iterable[PdfDocument | bytes]) -> PdfDocument:
@@ -161,6 +192,124 @@ class PdfDocument:
             with result.open_metadata(set_pikepdf_as_editor=False) as xmp:
                 xmp.load_from_docinfo(result.docinfo, delete_missing=True)
         return PdfDocument(result)
+
+    # ------------------------------------------------------------------ stamps
+
+    def stamp_text(
+        self,
+        text: str,
+        *,
+        font_size: float = 48,
+        color: str = "#FF0000",
+        opacity: float = 0.3,
+        angle: float = 45,
+        position: Position = "center",
+        margin: float = 36,
+        pages: Iterable[int] | None = None,
+        under: bool = False,
+    ) -> PdfDocument:
+        """Text watermark in Helvetica, ``angle`` degrees counter-clockwise.
+
+        Western European (cp1252) characters only; use :meth:`stamp_html` for other
+        scripts or richer styling. ``margin`` (points) applies to non-center positions.
+        """
+        result = ops.clone(self._pdf)
+        stamp_ops.stamp_text(
+            result, text, font_size=font_size, color=color, opacity=opacity, angle=angle,
+            position=position, margin=margin, pages=pages, under=under,
+        )  # fmt: skip
+        return PdfDocument(result)
+
+    def stamp_image(
+        self,
+        image: bytes,
+        *,
+        width: float | None = None,
+        position: Position = "center",
+        margin: float = 36,
+        opacity: float = 1.0,
+        pages: Iterable[int] | None = None,
+        under: bool = False,
+    ) -> PdfDocument:
+        """Image stamp (PNG, JPEG, ...; transparency kept). ``width`` in points,
+        default the image's size at 96 dpi; shrunk to fit inside the margins."""
+        result = ops.clone(self._pdf)
+        stamp_ops.stamp_image(
+            result, image, width=width, position=position, margin=margin,
+            opacity=opacity, pages=pages, under=under,
+        )  # fmt: skip
+        return PdfDocument(result)
+
+    def overlay(
+        self,
+        stamp: PdfDocument | bytes,
+        *,
+        stamp_page: int = 0,
+        opacity: float = 1.0,
+        pages: Iterable[int] | None = None,
+        under: bool = False,
+    ) -> PdfDocument:
+        """Draw a page of another PDF (letterhead, form background, ...) on each page,
+        scaled to fit and centered. ``under=True`` puts it behind the content."""
+        result = ops.clone(self._pdf)
+        stamp_ops.overlay_page(
+            result, _as_pdf(stamp), stamp_page=stamp_page, opacity=opacity,
+            pages=pages, under=under,
+        )  # fmt: skip
+        return PdfDocument(ops._detach(result))
+
+    async def stamp_html(
+        self,
+        renderer: HtmlRenderer,
+        html: str,
+        *,
+        opacity: float = 1.0,
+        pages: Iterable[int] | None = None,
+        under: bool = False,
+        base_url: str | None = None,
+    ) -> PdfDocument:
+        """Render ``html`` at each target page's size and draw it on the page.
+
+        The HTML page is transparent except for what it draws, so it works for
+        watermarks, headers, "PAID" badges and letterheads in any language.
+        """
+        targets = stamp_ops.target_pages(self._pdf, pages)
+        by_size: dict[tuple[float, float], list[int]] = {}
+        for index in targets:
+            size = self.page_size(index)
+            by_size.setdefault((round(size[0], 2), round(size[1], 2)), []).append(index)
+        result = self
+        for (width, height), indices in by_size.items():
+            stamp = await renderer.from_html(
+                html,
+                RenderOptions(
+                    width=f"{width / 72:.4f}in",
+                    height=f"{height / 72:.4f}in",
+                    margins=Margins(top="0", right="0", bottom="0", left="0"),
+                ),
+                base_url=base_url,
+            )
+            result = result.overlay(stamp, opacity=opacity, pages=indices, under=under)
+        return result
+
+    # ------------------------------------------------------------------ images and text
+
+    def to_images(
+        self,
+        *,
+        dpi: int = 150,
+        fmt: ImageFormat = "png",
+        pages: Iterable[int] | None = None,
+        jpeg_quality: int = 85,
+    ) -> list[bytes]:
+        """Render pages (0-based ``pages``, default all) to PNG or JPEG bytes."""
+        return image_ops.pdf_to_images(
+            self.to_bytes(), dpi=dpi, fmt=fmt, pages=pages, jpeg_quality=jpeg_quality
+        )
+
+    def extract_text(self) -> list[str]:
+        """Text of each page. Scanned pages have none (no OCR)."""
+        return text_ops.extract_text(self.to_bytes())
 
     def copy(self) -> PdfDocument:
         return PdfDocument(ops.clone(self._pdf))

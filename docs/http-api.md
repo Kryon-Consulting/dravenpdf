@@ -72,6 +72,7 @@ Error responses are JSON: `{"error": {"code": str, "message": str}}`.
 | 401 | `unauthorized` | Missing or wrong API key |
 | 413 | `payload_too_large` | Body or upload exceeds the limit |
 | 415 | `unsupported_media_type` | Not a PDF or image where one is needed |
+| 400 | `invalid_template` | Template can't be found, parsed or rendered |
 | 422 | `invalid_pdf` | The uploaded file can't be parsed as a PDF |
 | 422 | `blocked_request` | URL or a sub-resource was blocked by the SSRF guard |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |

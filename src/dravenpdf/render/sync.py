@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Mapping
 from os import PathLike
 from typing import Any, TypeVar
 
@@ -103,3 +103,18 @@ class Renderer:
         self, path: str | PathLike[str], options: RenderOptions | None = None
     ) -> PdfDocument:
         return self._run(self._async().from_file(path, options))
+
+    def from_template(
+        self,
+        template: str,
+        data: Mapping[str, Any],
+        options: RenderOptions | None = None,
+        *,
+        template_dir: str | PathLike[str] | None = None,
+        base_url: str | None = None,
+    ) -> PdfDocument:
+        return self._run(
+            self._async().from_template(
+                template, data, options, template_dir=template_dir, base_url=base_url
+            )
+        )

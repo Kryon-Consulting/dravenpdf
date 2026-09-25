@@ -51,7 +51,6 @@ with Renderer() as r:
 | `timeout_ms` | `int` | `30000` | For the whole render |
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
-`from_template` arrives in M4.
 
 ## Working with PDFs
 
@@ -93,16 +92,47 @@ Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
 `insert`) keep document info (title, author, ...) but not bookmarks. `rotate`,
 `delete`, `set_metadata` and `copy` keep everything.
 
-### Coming in M4
+### Stamps and watermarks
 
 ```python
-doc.stamp_text("CONFIDENTIAL", opacity=0.15, angle=45)
-doc.stamp_image(logo_png, position="top-right", pages="all")
-await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", under=False)
-doc.to_images(dpi=150, fmt="png")                   # list[bytes]
-doc.extract_text()                                  # list[str], one per page
-PdfDocument.from_images([png1, jpg2], paper="A4")
+doc.stamp_text("CONFIDENTIAL", font_size=48, color="#FF0000", opacity=0.3, angle=45,
+               position="center", margin=36, pages=None, under=False)
+doc.stamp_image(logo_png, width=120, position="top-right", margin=36, opacity=1.0)
+doc.overlay(letterhead_pdf, stamp_page=0, under=True)      # page of another PDF, fit + centered
+await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
 ```
+
+- `position`: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+  `bottom-left`, `bottom`, `bottom-right`. `margin` is in points.
+- Stamps are placed as the page is **displayed**, so they stay upright on rotated pages.
+- `stamp_text` uses Helvetica and supports Western European (cp1252) characters only.
+  For other scripts, custom fonts or styling, use `stamp_html`.
+- `stamp_image` accepts PNG, JPEG, GIF, WebP, ... and keeps transparency. Its default
+  size is the image's pixel size at 96 dpi, and it always shrinks to fit inside the margins.
+- `stamp_html` renders the HTML once per distinct page size, at that size and with no
+  margins. The HTML page is transparent except for what it draws.
+- `opacity` applies to the stamp as a whole; `under=True` draws it behind the page content.
+
+### Images and text
+
+```python
+PdfDocument.from_images([png, jpg])                     # page = image size (96 dpi default)
+PdfDocument.from_images([png, jpg], paper="A4", landscape=False, margin=36)  # fit on paper
+doc.to_images(dpi=150, fmt="png", pages=None)           # list[bytes]; fmt "png" | "jpeg"
+doc.extract_text()                                      # list[str], one per page; no OCR
+```
+
+## Templates
+
+```python
+doc = await r.from_template("<h1>Hi {{ name }}</h1>", {"name": "Ada"})       # source string
+doc = await r.from_template("invoice.html", data, template_dir="templates/")  # file in a folder
+```
+
+Templates run in Jinja2's **sandbox** with **autoescaping** on. With `template_dir`,
+templates may `extend`/`include` others in that folder, relative assets (CSS, images)
+resolve from the folder, and the page may load local files from that folder only.
+Template problems raise `TemplateError`.
 
 ## Errors
 
