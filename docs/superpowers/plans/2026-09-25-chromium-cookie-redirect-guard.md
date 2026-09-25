@@ -158,7 +158,7 @@ Start with Task 1, then Task 2. Task 2 is a hard go/no-go decision. Do not begin
 
 When a browser-level Fetch session detached with a request paused, Chromium sent the unchecked HTTPS GET before the session-close callback could close its context. The server recorded request bytes in the original probe twice; an independent reviewer reproduced the race in four of six runs. The request sometimes remained blocked, which does not establish a guarantee. Two Fetch sessions paused requests sequentially: detaching one left the request paused in the other, but detaching both sent it. Both sessions share the same Playwright browser connection, so they do not cover common transport loss.
 
-No production guard or D11 documentation was changed. The disposable failing probe remains local and uncommitted at `tests/integration/test_cdp_probe.py` in the implementation worktree. A revised design must either prove independent fail-closed enforcement or explicitly change the approved failure guarantee before Tasks 3–5 resume.
+No production guard or D11 documentation was changed. The disposable failing probe is archived locally under `.superpowers/sdd/2026-09-25-chromium-cookie-redirect-guard/test_cdp_probe_failed.py` in the implementation worktree; it is not collected by the normal test suite. A revised design must either prove independent fail-closed enforcement or explicitly change the approved failure guarantee before Tasks 3–5 resume.
 
 ## API references for implementation
 
