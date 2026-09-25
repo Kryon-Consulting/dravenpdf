@@ -77,6 +77,12 @@ class InvalidPdfError(DravenPdfError):
     code = "invalid_pdf"
 
 
+class PdfPasswordError(InvalidPdfError):
+    """The PDF is password-protected and no (or the wrong) password was given."""
+
+    code = "pdf_password"
+
+
 class PdfOperationError(DravenPdfError):
     """A PDF operation got arguments it can't apply, e.g. a page out of range."""
 
@@ -87,6 +93,16 @@ class LimitExceededError(PdfOperationError):
     """An operation's output would pass a size limit, e.g. too many pixels."""
 
     code = "limit_exceeded"
+
+
+class SigningError(DravenPdfError):
+    """Signing or reading signatures failed (bad key file, unreadable signature...)."""
+
+    code = "signing_failed"
+
+
+class SignatureInvalidatedWarning(UserWarning):
+    """An operation on a signed document writes a new file, so its signatures break."""
 
 
 class PoolExhaustedError(DravenPdfError):
@@ -103,8 +119,11 @@ __all__ = [
     "InvalidPdfError",
     "LimitExceededError",
     "PdfOperationError",
+    "PdfPasswordError",
     "PoolExhaustedError",
     "RenderError",
     "RenderTimeoutError",
+    "SignatureInvalidatedWarning",
+    "SigningError",
     "TemplateError",
 ]

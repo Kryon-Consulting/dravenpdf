@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from dravenpdf import __version__
+from dravenpdf.document.signing import SigningKey
+from dravenpdf.errors import SigningError
 from dravenpdf.render.pool import BrowserPool
 from dravenpdf.render.renderer import AsyncRenderer
 from dravenpdf.server import errors
@@ -29,6 +31,16 @@ def create_app(settings: Settings | None = None, renderer: AsyncRenderer | None 
     """Build the app. ``renderer`` lets tests supply their own; by default one is
     created from ``settings`` and started/stopped with the app."""
     settings = settings or Settings()
+    # Load signing keys and trust roots now: a bad key stops the server at startup,
+    # not on the first sign request. Messages name the key, never its password.
+    signing_keys: dict[str, SigningKey] = {}
+    for name, config in settings.signing_keys.items():
+        try:
+            signing_keys[name] = SigningKey.from_pkcs12(config.pkcs12, config.read_password())
+        except (OSError, SigningError) as exc:
+            reason = exc.message if isinstance(exc, SigningError) else exc.strerror
+            raise SigningError(f"signing key {name!r}: {reason}") from None
+    trust_roots = [path.read_bytes() for path in settings.trust_root_files]
     if not logging.getLogger().handlers:
         logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("dravenpdf").setLevel(settings.log_level.upper())
@@ -56,6 +68,8 @@ def create_app(settings: Settings | None = None, renderer: AsyncRenderer | None 
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.signing_keys = signing_keys
+    app.state.trust_roots = trust_roots
     app.state.renderer = None
 
     def current_pool() -> BrowserPool | None:

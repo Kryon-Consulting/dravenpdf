@@ -21,8 +21,9 @@ libraries like IronPDF, but uses open-source parts:
 M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
 HTTP service (`server/`). After M6: guard fixes (WebSockets, failed fetches), render
 reports and strict mode, in-memory asset bundles, browser environment options, CSS
-page size, tagged PDFs/outlines, expression waits, `prepare` hooks, and rendering
-behind a login (`RenderAuth`; see `docs/roadmap.md` and D11 in `docs/decisions.md`).
+page size, tagged PDFs/outlines, expression waits, `prepare` hooks, rendering behind a
+login (`RenderAuth`, D11), and M8: encryption, form filling/flattening and digital
+signatures (D12). See `docs/roadmap.md`.
 M7 (packaging) is partly done: Dockerfile and compose exist but the Docker image has
 never been built; visual tests and a first release remain.
 Update that file (and the status line in `README.md`) as milestones land.
@@ -88,6 +89,13 @@ Full reasoning is in `docs/decisions.md`.
   first: its call log lists request headers. Per-hop header rules live in
   `RequestGuard.hop_headers`; redirect tests in `tests/integration/test_auth.py` fail if
   credentials follow a redirect to another origin.
+- Signed documents: `PdfDocument.to_bytes()` must keep returning the exact source bytes
+  of an unmodified document, and every operation must go through `_derive()` (which
+  carries pending encryption and warns about invalidated signatures). Never re-save a
+  signed file on a code path that claims to leave it unchanged.
+- Passwords and key passphrases follow the same rules as `RenderAuth` credentials:
+  `SecretStr` where stored, never in messages, and `from None` when re-raising errors
+  that might contain them.
 - Every guard route handler must answer the browser on every path (fulfill, continue
   or abort), including when its own fetch fails; an unanswered route hangs the render.
   New kinds of browser traffic (like WebSockets) need their own guard route.

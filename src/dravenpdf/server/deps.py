@@ -76,11 +76,11 @@ async def timed(request: Request, source: str, work: Awaitable[T]) -> T:
         return await work
 
 
-async def read_pdf(upload: UploadFile) -> PdfDocument:
+async def read_pdf(upload: UploadFile, password: str | None = None) -> PdfDocument:
     data = await upload.read()
     if b"%PDF-" not in data[:1024]:
         raise ApiError("unsupported_media_type", f"{upload.filename or 'upload'} is not a PDF")
-    return await asyncio.to_thread(PdfDocument.from_bytes, data)
+    return await asyncio.to_thread(PdfDocument.from_bytes, data, password=password)
 
 
 def pages_arg(spec: str | None, doc: PdfDocument) -> list[int] | None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from dravenpdf.document import PdfDocument
+from dravenpdf.document.forms import FormField
+from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
 from dravenpdf.errors import (
     AssetError,
     BlockedRequestError,
@@ -13,9 +15,12 @@ from dravenpdf.errors import (
     InvalidPdfError,
     LimitExceededError,
     PdfOperationError,
+    PdfPasswordError,
     PoolExhaustedError,
     RenderError,
     RenderTimeoutError,
+    SignatureInvalidatedWarning,
+    SigningError,
     TemplateError,
 )
 from dravenpdf.options import HeaderFooter, Margins, RenderOptions, Viewport
@@ -36,6 +41,7 @@ __all__ = [
     "Cookie",
     "DravenPdfError",
     "FailedRequest",
+    "FormField",
     "HeaderFooter",
     "HttpError",
     "IncompleteRenderError",
@@ -44,6 +50,7 @@ __all__ = [
     "Margins",
     "PdfDocument",
     "PdfOperationError",
+    "PdfPasswordError",
     "PoolExhaustedError",
     "RenderAuth",
     "RenderError",
@@ -52,6 +59,11 @@ __all__ = [
     "RenderTimeoutError",
     "Renderer",
     "RequestGuard",
+    "SignatureBox",
+    "SignatureInfo",
+    "SignatureInvalidatedWarning",
+    "SigningError",
+    "SigningKey",
     "StorageState",
     "TemplateError",
     "Viewport",

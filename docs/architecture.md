@@ -48,7 +48,9 @@ pdf/
 │   │   ├── pages.py            # merge, split, extract, rotate, delete, reorder
 │   │   ├── stamp.py            # text / image / HTML overlays (watermarks)
 │   │   ├── images.py           # image → PDF, PDF → PNG/JPEG
-│   │   └── text.py             # text extraction
+│   │   ├── text.py             # text extraction
+│   │   ├── forms.py            # list, fill and flatten AcroForms
+│   │   └── signing.py          # sign (pyHanko) and verify signatures
 │   ├── cli.py                  # Typer app: `dravenpdf ...`
 │   └── server/                 # needs the [server] extra
 │       ├── app.py              # create_app(): lifespan starts/stops BrowserPool
@@ -179,6 +181,17 @@ save-and-reopen their result (`pages._detach`) before returning it.
 - **`images.py`**: `images_to_pdf` (img2pdf, no re-encoding) and `to_images`
   (pypdfium2, DPI and format options).
 - **`text.py`**: per-page text via pypdfium2.
+- **`forms.py`**: AcroForm listing, filling and flattening with `pikepdf.form`. Values are
+  validated before any change; appearances come from QPDF's generator (cp1252 text),
+  other scripts fall back to `NeedAppearances`. Radio groups are set by selecting the
+  option object (assigning `.value` stores a string and draws nothing). After
+  flattening, widgets QPDF couldn't draw are removed. Page operations copy pages with
+  `add_pages_from`, which keeps form fields.
+- **`signing.py`**: `SigningKey` (PKCS#12), `sign()` (pyHanko incremental update,
+  PAdES, optional timestamp) and `verify()` (explicit trust roots only).
+  `PdfDocument` keeps the exact bytes it was read from while unmodified (`_source`)
+  and returns them from `to_bytes()`, so signatures survive; `_derive()` warns
+  (`SignatureInvalidatedWarning`) when an operation rewrites a signed document.
 - **`_pdfium.py`**: pdfium is not thread-safe, so every pdfium call holds one global
   lock (`_pdfium.LOCK`, via `open_pdf()`).
 - **Compression** lives in `PdfDocument.save(compress=True)`: pikepdf object

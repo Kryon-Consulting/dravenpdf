@@ -106,6 +106,17 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 | `POST /v1/pdf/stamp` | `file`, exactly one of `text` / `image` (file) / `html`; `opacity`?, `angle`?, `font_size`?, `color`?, `width`?, `position`?, `margin`?, `under`?, `pages`? | `application/pdf` |
 | `POST /v1/pdf/metadata` | `file`, `title`?, `author`?, `subject`?, `keywords`? (`""` removes) | `application/pdf` |
 | `POST /v1/pdf/compress` | `file` | `application/pdf` |
+| `POST /v1/pdf/form/fields` | `file`, `password`? | `application/json`: `{"fields": [{name, kind, value, options, read_only, required, multiline, max_length}]}` |
+| `POST /v1/pdf/form/fill` | `file`, `values` (JSON object: text, true/false or an option per field name), `flatten`?, `password`? | `application/pdf` |
+| `POST /v1/pdf/form/flatten` | `file`, `password`? | `application/pdf` |
+| `GET /v1/pdf/signing-keys` | – | `application/json`: `{"keys": [{name, subject, not_after}]}` |
+| `POST /v1/pdf/sign` | `file`, `key` (a configured key's name), `reason`?, `location`?, `contact`?, `field_name`?, visible: `page` (1-based), `x`, `y`, `width`, `height` (points, from bottom-left)?, `timestamp`? (uses `DRAVENPDF_TIMESTAMP_URL`), `password`? | `application/pdf` (the signed file; don't change it afterwards) |
+| `POST /v1/pdf/verify` | `file`, `password`? | `application/json`: `{"signatures": [{field, signer, signed_at, intact, valid, trusted, covers_whole_document, timestamped, reason, location, ok}]}` |
+| `POST /v1/pdf/encrypt` | `file`, `user_password`?, `owner_password`? (random if omitted), `password`? (if the input is already protected), `allow_print`/`allow_copy`/`allow_modify`/`allow_annotate`/`allow_forms`? | `application/pdf` (AES-256) |
+| `POST /v1/pdf/decrypt` | `file`, `password` | `application/pdf` |
+
+Other PDF endpoints refuse password-protected uploads with 422 `pdf_password`;
+decrypt them first. Passwords never appear in responses or logs.
 
 ```bash
 curl -X POST http://localhost:8000/v1/pdf/merge -H "X-API-Key: $KEY" \
@@ -154,7 +165,9 @@ lives in `src/dravenpdf/server/errors.py`.
 | 413 | `payload_too_large` | Body larger than `DRAVENPDF_MAX_BODY_MB` (with or without Content-Length) |
 | 415 | `unsupported_media_type` | An upload that should be a PDF isn't one |
 | 422 | `limit_exceeded` | The result would pass an output limit (image pixels, ZIP size) |
-| 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
+| 422 | `invalid_pdf` | Looks like a PDF but can't be read |
+| 422 | `pdf_password` | The PDF is password-protected and no (or the wrong) password was given |
+| 422 | `signing_failed` | Signing failed (e.g. the timestamp server was unreachable) or signatures couldn't be read |
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
 | 422 | `render_incomplete` | A strict render (`fail_on_resource_errors` / `fail_on_page_errors`) found problems; the message lists them |
@@ -179,3 +192,6 @@ lives in `src/dravenpdf/server/errors.py`.
 | `DRAVENPDF_LOG_LEVEL` | `INFO` | |
 | `DRAVENPDF_CHROMIUM_PATH` | – | Use this Chromium binary instead of Playwright's |
 | `DRAVENPDF_WORKERS` | `1` | Docker image only: worker processes |
+| `DRAVENPDF_SIGNING_KEYS` | – | JSON: `{"name": {"pkcs12": "/keys/x.p12", "password_file": "/run/secrets/x"}}` (or `"password"`). Loaded at startup; a bad key stops the server. Requests name a key; keys are never uploaded |
+| `DRAVENPDF_TIMESTAMP_URL` | – | RFC 3161 timestamp server for `timestamp=true` |
+| `DRAVENPDF_TRUST_ROOTS` | – | Comma-separated PEM/DER files that `/v1/pdf/verify` trusts |

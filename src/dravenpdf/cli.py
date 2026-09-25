@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,8 +19,9 @@ from dravenpdf import __version__
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
+from dravenpdf.document.signing import SignatureBox, SigningKey
 from dravenpdf.document.stamp import Position
-from dravenpdf.errors import BlockedRequestError, DravenPdfError
+from dravenpdf.errors import BlockedRequestError, DravenPdfError, PdfPasswordError
 from dravenpdf.options import (
     ColorScheme,
     HeaderFooter,
@@ -91,6 +93,8 @@ def main() -> None:
         app()
     except DravenPdfError as exc:
         typer.secho(f"error: {exc.message}", fg=typer.colors.RED, err=True)
+        if isinstance(exc, PdfPasswordError) and "needs a password" in exc.message:
+            typer.echo("hint: remove the password first with `dravenpdf decrypt`", err=True)
         if isinstance(exc, BlockedRequestError) and "non-public" in exc.message:
             typer.echo("hint: pass --allow-private to render local or internal addresses", err=True)
         sys.exit(1)
@@ -428,6 +432,158 @@ def metadata(
         _fail("give -o to write the changed copy")
     assert output is not None
     _write_pdf(doc.set_metadata(**changes), output)
+
+
+@app.command("form-fields")
+def form_fields(input: InputPdf) -> None:
+    """Print the form's fields as JSON."""
+    fields = PdfDocument.open(input).form_fields()
+    typer.echo(json.dumps([asdict(f) for f in fields], indent=2, ensure_ascii=False))
+
+
+@app.command("fill-form")
+def fill_form(
+    input: InputPdf,
+    output: Output,
+    data: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help='JSON object: {"field": value, ...}.'),
+    ],
+    flatten: Annotated[bool, typer.Option(help="Burn the values in and remove the form.")] = False,
+) -> None:
+    """Fill form fields (text, true/false for checkboxes, option names)."""
+    values = json.loads(data.read_text())
+    if not isinstance(values, dict):
+        _fail("--data must contain a JSON object")
+    _write_pdf(PdfDocument.open(input).fill_form(values, flatten=flatten), output)
+
+
+@app.command("flatten-form")
+def flatten_form(input: InputPdf, output: Output) -> None:
+    """Burn the current field values into the pages and remove the form."""
+    _write_pdf(PdfDocument.open(input).flatten_form(), output)
+
+
+@app.command()
+def sign(
+    input: InputPdf,
+    output: Output,
+    key: Annotated[
+        Path, typer.Option(exists=True, dir_okay=False, help="PKCS#12 (.p12 / .pfx) key file.")
+    ],
+    key_password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_KEY_PASSWORD",
+            prompt=True,
+            hide_input=True,
+            prompt_required=False,
+            help="Key passphrase (env DRAVENPDF_KEY_PASSWORD, else prompted).",
+        ),
+    ] = "",
+    reason: Annotated[str | None, typer.Option(help="Why it is signed.")] = None,
+    location: Annotated[str | None, typer.Option(help="Where it is signed.")] = None,
+    contact: Annotated[str | None, typer.Option(help="Signer contact.")] = None,
+    field_name: Annotated[str, typer.Option(help="Signature field name.")] = "Signature",
+    visible: Annotated[
+        str | None,
+        typer.Option(help="Visible signature: PAGE,X,Y,WIDTH,HEIGHT (1-based page, points)."),
+    ] = None,
+    timestamp_url: Annotated[
+        str | None, typer.Option(help="RFC 3161 timestamp server URL.")
+    ] = None,
+) -> None:
+    """Digitally sign a PDF. Sign last: any later change breaks the signature."""
+    box = None
+    if visible is not None:
+        parts = visible.split(",")
+        try:
+            page, x, y, width, height = (float(p) for p in parts)
+        except ValueError:
+            _fail("--visible must be PAGE,X,Y,WIDTH,HEIGHT, e.g. 1,50,50,200,60")
+        box = SignatureBox(page=int(page) - 1, x=x, y=y, width=width, height=height)
+    signing_key = SigningKey.from_pkcs12(key, key_password or None)
+    doc = PdfDocument.open(input).sign(
+        signing_key, field_name=field_name, reason=reason, location=location,
+        contact=contact, box=box, timestamp_url=timestamp_url,
+    )  # fmt: skip
+    _write_pdf(doc, output)
+
+
+@app.command()
+def verify(
+    input: InputPdf,
+    trust: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, dir_okay=False, help="Trusted CA certificate(s), PEM/DER."),
+    ] = None,
+) -> None:
+    """Check signatures; prints JSON. Exits with 1 if any signature is broken, or if
+    --trust is given and a signer isn't trusted."""
+    roots = [p.read_bytes() for p in trust or []]
+    infos = PdfDocument.open(input).verify_signatures(roots)
+    typer.echo(json.dumps([asdict(i) for i in infos], indent=2, default=str))
+    broken = [i for i in infos if not (i.intact and i.valid) or (roots and not i.trusted)]
+    if broken:
+        raise typer.Exit(1)
+
+
+@app.command()
+def encrypt(
+    input: InputPdf,
+    output: Output,
+    user_password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_USER_PASSWORD",
+            help="Password to open the file (env DRAVENPDF_USER_PASSWORD; empty = none).",
+        ),
+    ] = "",
+    owner_password: Annotated[
+        str | None,
+        typer.Option(
+            envvar="DRAVENPDF_OWNER_PASSWORD",
+            help="Full-access password (env DRAVENPDF_OWNER_PASSWORD; random if omitted).",
+        ),
+    ] = None,
+    allow_print: Annotated[bool, typer.Option("--allow-print/--no-print")] = True,
+    allow_copy: Annotated[bool, typer.Option("--allow-copy/--no-copy")] = True,
+    allow_modify: Annotated[bool, typer.Option("--allow-modify/--no-modify")] = True,
+    allow_annotate: Annotated[bool, typer.Option("--allow-annotate/--no-annotate")] = True,
+    allow_forms: Annotated[bool, typer.Option("--allow-forms/--no-forms")] = True,
+) -> None:
+    """Encrypt a PDF (AES-256). Prefer the env variables to passing passwords as
+    arguments, which other users on the machine can see in the process list."""
+    if (
+        not user_password
+        and owner_password is None
+        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
+    ):
+        _fail("set a password or restrict a permission (e.g. --no-copy)")
+    doc = PdfDocument.open(input).encrypt(
+        user_password=user_password, owner_password=owner_password,
+        allow_print=allow_print, allow_copy=allow_copy, allow_modify=allow_modify,
+        allow_annotate=allow_annotate, allow_forms=allow_forms,
+    )  # fmt: skip
+    _write_pdf(doc, output)
+
+
+@app.command()
+def decrypt(
+    input: InputPdf,
+    output: Output,
+    password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_PDF_PASSWORD",
+            prompt=True,
+            hide_input=True,
+            help="The user or owner password (env DRAVENPDF_PDF_PASSWORD, else prompted).",
+        ),
+    ],
+) -> None:
+    """Remove password protection."""
+    _write_pdf(PdfDocument.open(input, password=password).decrypt(), output)
 
 
 @app.command()

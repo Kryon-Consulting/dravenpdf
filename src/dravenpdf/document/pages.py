@@ -80,8 +80,8 @@ def _copy_docinfo(source: pikepdf.Pdf, target: pikepdf.Pdf) -> None:
 def _from_pages(source: pikepdf.Pdf, indices: Sequence[int]) -> pikepdf.Pdf:
     """A new PDF with the given pages of ``source``, in that order (repeats allowed)."""
     result = pikepdf.new()
-    for index in indices:
-        result.pages.append(source.pages[index])
+    # add_pages_from (not pages.append) carries form fields along with their pages.
+    result.add_pages_from(source, pages=list(indices))
     _copy_docinfo(source, result)
     return _detach(result)
 
@@ -102,7 +102,7 @@ def merge(pdfs: Sequence[pikepdf.Pdf]) -> pikepdf.Pdf:
         raise PdfOperationError("nothing to merge")
     result = pikepdf.new()
     for pdf in pdfs:
-        result.pages.extend(pdf.pages)
+        result.add_pages_from(pdf)  # keeps form fields; colliding names are renamed
     _copy_docinfo(pdfs[0], result)
     return _detach(result)
 
@@ -183,8 +183,8 @@ def insert(pdf: pikepdf.Pdf, other: pikepdf.Pdf, at: int) -> pikepdf.Pdf:
     if not 0 <= at <= count:
         raise PdfOperationError(f"insert position {at} is out of range 0..{count}")
     result = pikepdf.new()
-    result.pages.extend(pdf.pages[:at])
-    result.pages.extend(other.pages)
-    result.pages.extend(pdf.pages[at:])
+    result.add_pages_from(pdf, pages=range(at))
+    result.add_pages_from(other)
+    result.add_pages_from(pdf, pages=range(at, count))
     _copy_docinfo(pdf, result)
     return _detach(result)

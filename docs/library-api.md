@@ -179,10 +179,92 @@ Page numbers in Python arguments are **0-based**. Range strings (`"1-3,5,8-"`) a
 **1-based**, matching how people write page ranges; `"8-"` means page 8 to the end.
 
 Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
-`insert`) keep document info (title, author, ...) but not bookmarks, and the tag
+`insert`) keep document info (title, author, ...) and form fields but not bookmarks, and the tag
 structure of a `tagged` PDF won't match the new pages. `rotate`, `delete`,
 `set_metadata` and `copy` keep everything. Render with `tagged`/`outline` last if the
 result must stay accessible.
+
+### Forms
+
+```python
+doc.form_fields()        # [FormField(name, kind, value, options, read_only, required, multiline, max_length)]
+filled = doc.fill_form({
+    "name": "Ada Lovelace",        # text / multiline text
+    "agree": True,                 # checkbox: True / False
+    "size": "M",                   # radio group: one of its options
+    "country": "Japan",            # dropdown / list: one of its options
+}, flatten=False)
+filled.flatten_form()              # burn the values into the pages, remove the form
+```
+
+- Everything is checked before anything changes (unknown or read-only fields, bad
+  options, `MaxLen`, line breaks in single-line fields): a fill applies fully or not
+  at all (`PdfOperationError`).
+- Appearances are drawn for Western European (cp1252) text. Other scripts are stored
+  and drawn by the viewer (`NeedAppearances`), which Acrobat and browsers do, but such
+  values can't be flattened; `flatten=True` refuses them.
+- Hybrid XFA forms are filled through their AcroForm fields (the XFA part is removed);
+  XFA-only forms are refused. Signature fields and buttons can't be filled.
+- Flattening also draws other annotations that have an appearance (comments,
+  highlights) into the page.
+- Page operations (`extract`, `split`, `merge`, ...) keep form fields; merging two
+  copies of a form renames the second copy's fields.
+
+### Digital signatures
+
+```python
+from dravenpdf import SigningKey, SignatureBox
+
+key = SigningKey.from_pkcs12("company.p12", password)    # .p12 / .pfx, or bytes
+signed = doc.sign(
+    key,
+    reason="Approved", location="Berlin", contact=None,
+    box=SignatureBox(page=0, x=50, y=50, width=200, height=60),   # omit for invisible
+    timestamp_url="https://tsa.example/",                          # optional RFC 3161
+)
+signed.save("signed.pdf")
+
+for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
+    sig.field, sig.signer, sig.signed_at, sig.reason, sig.location
+    sig.intact, sig.valid, sig.trusted, sig.covers_whole_document, sig.timestamped
+    sig.ok        # all of the above that matter: intact, valid, trusted, whole document
+```
+
+- PAdES baseline signatures via pyHanko. These are **advanced** electronic signatures;
+  EU *qualified* signatures (eIDAS) are out of scope.
+- **Sign last.** Signing appends to the file's exact bytes. A document read from a
+  file and not changed is written back byte for byte, so its signatures stay valid;
+  any operation on a signed document writes a new file and emits
+  `SignatureInvalidatedWarning`. Pending encryption blocks signing (`SigningError`).
+- A second signature goes into a new field (`Signature2`, ...); the first then no
+  longer covers the whole document, which `verify_signatures` reports.
+- `trusted` only counts the trust roots you pass (PEM or DER); the operating system's
+  certificate store is never used.
+
+### Passwords and encryption
+
+```python
+doc = PdfDocument.open("locked.pdf", password="user-or-owner-password")   # decrypts
+doc.was_encrypted                                   # True if the file was protected
+
+protected = doc.encrypt(
+    user_password="needed-to-open",   # "" = anyone can open it
+    owner_password="full-access",     # omitted = random, so restrictions can't be lifted
+    allow_print=True, allow_copy=False, allow_modify=False,
+    allow_annotate=True, allow_forms=True,
+)
+protected.is_encrypted                # True: to_bytes()/save() write AES-256 encrypted
+protected.rotate(90).is_encrypted     # True: operations keep pending encryption
+protected.decrypt()                   # a copy written without encryption
+```
+
+- Opening with a password **decrypts**: the document and its derived documents are
+  written unencrypted unless you call `encrypt()` again.
+- `merge` takes pending encryption from the first document, like metadata.
+- The `allow_*` permissions are honoured by well-behaved viewers only; anyone who can
+  open the file can technically copy or print it. Use a user password to protect content.
+- A missing or wrong password raises `PdfPasswordError` (a subclass of
+  `InvalidPdfError`); passwords never appear in error messages.
 
 ### Stamps and watermarks
 
@@ -277,6 +359,17 @@ dravenpdf stamp       in.pdf -o out.pdf (--text DRAFT | --image logo.png | --htm
 dravenpdf metadata    in.pdf                          # show info as JSON
 dravenpdf metadata    in.pdf --title "Q3" -o out.pdf  # write a changed copy
 dravenpdf compress    in.pdf -o out.pdf
+dravenpdf form-fields in.pdf                   # JSON
+dravenpdf fill-form   in.pdf --data values.json [--flatten] -o out.pdf
+dravenpdf flatten-form in.pdf -o out.pdf
+dravenpdf encrypt     in.pdf -o out.pdf [--no-print] [--no-copy] [--no-modify] [--no-annotate] [--no-forms]
+                      # passwords: env DRAVENPDF_USER_PASSWORD / DRAVENPDF_OWNER_PASSWORD
+                      # (or --user-password / --owner-password, visible in the process list)
+dravenpdf decrypt     in.pdf -o out.pdf        # password: env DRAVENPDF_PDF_PASSWORD or prompt
+dravenpdf sign        in.pdf -o out.pdf --key company.p12 [--reason] [--location] [--contact]
+                      [--visible PAGE,X,Y,W,H] [--timestamp-url URL]
+                      # key passphrase: env DRAVENPDF_KEY_PASSWORD or prompt
+dravenpdf verify      in.pdf [--trust ca.pem ...]    # JSON; exit 1 if broken / untrusted
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds
