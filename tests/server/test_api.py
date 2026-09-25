@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -611,12 +612,76 @@ def test_render_url_rejects_bad_auth_without_echoing_it(
     assert fake.calls == []
 
 
-def test_auth_only_on_the_url_endpoint(client: TestClient) -> None:
-    response = client.post(
-        "/v1/render/html", json={"html": "x", "auth": {"cookies": []}}, headers=AUTH
-    )
+HEADER_AUTH = {"headers": {"https://api.example.com": {"Authorization": "Bearer s3cret"}}}
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body"),
+    [
+        ("/v1/render/html", {"html": "<img src='https://api.example.com/i.png'>"}),
+        ("/v1/render/template", {"template": "<p>{{ x }}</p>", "data": {"x": 1}}),
+    ],
+)
+def test_every_json_render_endpoint_passes_auth(
+    client: TestClient, fake: FakeRenderer, endpoint: str, body: dict[str, object]
+) -> None:
+    response = client.post(endpoint, json={**body, "auth": HEADER_AUTH}, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert auth.headers_for("https://api.example.com/x") == {"authorization": "Bearer s3cret"}
+
+
+@pytest.mark.parametrize("data", [None, '{"x": 1}'])
+def test_bundle_passes_auth(client: TestClient, fake: FakeRenderer, data: str | None) -> None:
+    form = {"html": "<p>{{ x }}</p>", "auth": json.dumps(HEADER_AUTH)}
+    if data is not None:
+        form["data"] = data
+
+    response = client.post("/v1/render/bundle", data=form, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert auth.headers_for("https://api.example.com/") == {"authorization": "Bearer s3cret"}
+
+
+@pytest.mark.parametrize(
+    ("auth", "message"),
+    [
+        ('{"headers": {"https://a.example": {"X": "s3cret\\r\\n"}}}', "control"),
+        ('{"headers": {"https://bundle.dravenpdf.invalid": {"X": "s3cret"}}}', "never sent"),
+        ('{"storage_state": "/var/s3cret.json"}', "storage_state"),
+        ("not json s3cret", "auth"),
+    ],
+)
+def test_bundle_rejects_bad_auth_without_echoing_it(
+    client: TestClient, fake: FakeRenderer, auth: str, message: str
+) -> None:
+    response = client.post("/v1/render/bundle", data={"html": "x", "auth": auth}, headers=AUTH)
 
     assert response.status_code == 400
+    assert message in response.json()["error"]["message"]
+    assert "s3cret" not in response.text
+    assert fake.calls == []
+
+
+def test_indexed_db_state_is_accepted_and_masked(client: TestClient, fake: FakeRenderer) -> None:
+    records = [{"key": "s", "value": {"token": "s3cret"}}]
+    store = {"name": "auth", "autoIncrement": False, "indexes": [], "records": records}
+    snapshot = [{"name": "app", "version": 1, "stores": [store]}]
+    state = {"origins": [{"origin": "https://app.example.com", "indexedDB": snapshot}]}
+
+    response = client.post(
+        "/v1/render/url",
+        json={"url": "https://app.example.com/", "auth": {"storage_state": state}},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert "s3cret" not in repr(auth)
+    (origin,) = auth.playwright_storage_state()["origins"]
+    assert origin["indexedDB"] == snapshot
 
 
 # ---------------------------------------------------------------- encryption

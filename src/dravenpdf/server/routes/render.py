@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.assets import check_path
+from dravenpdf.render.auth import RenderAuth
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
     clamp_timeout,
@@ -36,11 +37,13 @@ router = APIRouter(prefix="/v1/render", tags=["render"], dependencies=[Depends(r
 
 @router.post("/html", response_class=Response, responses=PDF_RESPONSE)
 async def render_html(body: RenderHtmlRequest, request: Request) -> Response:
-    """Render an HTML string. `base_url` resolves relative links and assets."""
+    """Render an HTML string. `base_url` resolves relative links and assets; `auth`
+    supplies credentials for the remote resources the page loads."""
     options = clamp_timeout(body.options, settings_of(request))
-    doc = await timed(
-        request, "html", renderer_of(request).from_html(body.html, options, base_url=body.base_url)
+    work = renderer_of(request).from_html(
+        body.html, options, base_url=body.base_url, auth=body.auth
     )
+    doc = await timed(request, "html", work)
     return await pdf_response(doc, body.filename, body.post)
 
 
@@ -56,10 +59,13 @@ async def render_url(body: RenderUrlRequest, request: Request) -> Response:
 
 @router.post("/template", response_class=Response, responses=PDF_RESPONSE)
 async def render_template(body: RenderTemplateRequest, request: Request) -> Response:
-    """Render a Jinja2 template source with `data` (sandboxed, autoescaped)."""
+    """Render a Jinja2 template source with `data` (sandboxed, autoescaped). `auth`
+    supplies credentials for the remote resources the page loads."""
     options = clamp_timeout(body.options, settings_of(request))
     renderer = renderer_of(request)
-    work = renderer.from_template(body.template, body.data, options, base_url=body.base_url)
+    work = renderer.from_template(
+        body.template, body.data, options, base_url=body.base_url, auth=body.auth
+    )
     doc = await timed(request, "template", work)
     return await pdf_response(doc, body.filename, body.post)
 
@@ -90,6 +96,10 @@ async def render_bundle(
     ] = None,
     options: Annotated[str | None, Form(description="RenderOptions, as JSON.")] = None,
     post: Annotated[str | None, Form(description="PostProcess, as JSON.")] = None,
+    auth: Annotated[
+        str | None,
+        Form(description="RenderAuth, as JSON: credentials for the remote resources loaded."),
+    ] = None,
     filename: Annotated[str, Form(max_length=200)] = "document.pdf",
 ) -> Response:
     """Render HTML with its CSS, fonts, images and scripts sent in the same request.
@@ -122,11 +132,14 @@ async def render_bundle(
         _json_field(RenderOptions, options, "options") or RenderOptions(), settings_of(request)
     )
     post_process = _json_field(PostProcess, post, "post")
+    render_auth = _json_field(RenderAuth, auth, "auth")
 
     renderer = renderer_of(request)
     if values is None:
-        work = renderer.from_html(document, render_options, assets=assets)
+        work = renderer.from_html(document, render_options, assets=assets, auth=render_auth)
     else:
-        work = renderer.from_template(document, values, render_options, assets=assets)
+        work = renderer.from_template(
+            document, values, render_options, assets=assets, auth=render_auth
+        )
     doc = await timed(request, "bundle", work)
     return await pdf_response(doc, safe_filename(filename), post_process)

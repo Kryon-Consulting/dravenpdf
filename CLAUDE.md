@@ -102,6 +102,9 @@ Full reasoning is in `docs/decisions.md`.
 - Every guard route handler must answer the browser on every path (fulfill, continue
   or abort), including when its own fetch fails; an unanswered route hangs the render.
   New kinds of browser traffic (like WebSockets) need their own guard route.
+- The guard's first hop must pass Chromium's own `Cookie` header, empty if there is
+  none: `route.fetch` without one adds every stored cookie for the URL, ignoring
+  SameSite (a test in `tests/integration/test_auth.py` catches this).
 - Don't replace the guard's `route.fetch(max_redirects=0)` loop with
   `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
   could redirect Chromium to an internal one unchecked (tests cover this).

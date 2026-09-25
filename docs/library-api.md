@@ -78,12 +78,32 @@ auth = RenderAuth(
 )
 doc = await r.from_url("https://app.example.com/reports/42", auth=auth)
 doc = renderer.from_url(url, auth=auth)                         # sync Renderer too
+doc = await r.from_html(html, auth=auth)   # also from_file, from_template, bundles (assets=)
 ```
 
+Every `from_*` method takes `auth`. What each credential does depends on the origin of
+the page and of what it loads (decision D11):
+
+| Credential | Takes effect |
+|---|---|
+| `headers` | On requests to that exact origin, from any page (images, fonts, API calls, frames) |
+| `cookies` | Where Chromium sends them. From a page on another site (`from_html`'s `about:blank`, a local file, a bundle, or a web page on another site) only `SameSite=None; Secure` cookies are sent |
+| `localStorage` / `indexedDB` | On pages of that origin: the page itself with `from_url`, or a page it navigates to. Not in a page on another origin; Chromium partitions storage for embedded frames |
+
+So for HTML, files, templates and bundles, headers are the dependable way to reach
+protected images or APIs; a login kept in storage applies once a page of that origin
+loads.
+
 - **Cookies** (`url`, or `domain` + `path`; `expires`, `http_only`, `secure`,
-  `same_site`) and **storage state** (cookies plus `localStorage` per origin, in
-  Playwright's own format) go into the render's fresh browser context before the first
-  navigation. The browser applies its normal cookie rules.
+  `same_site`) and **storage state** (cookies plus `localStorage` and `indexedDB` per
+  origin, in Playwright's own format: `context.storage_state(indexed_db=True)`) go into
+  the render's fresh browser context before the first navigation. The browser applies
+  its normal cookie rules, SameSite included: the guard passes on exactly the cookies
+  Chromium chose for a request (on redirect hops after the first, the stored cookies
+  for the new URL, without SameSite).
+- **IndexedDB** snapshots are kept whole and opaque (a `Secret`, masked like the other
+  values), limited to the 1 MiB total, and restored before the first navigation, so a
+  login an app keeps in IndexedDB works on the first page load.
 - **Headers** are keyed by exact origin (scheme, host, port; default ports optional).
   The request guard adds them to every request and redirect hop for that origin only:
   images, fonts and API calls on the same origin get them; other origins don't.
@@ -101,7 +121,9 @@ doc = renderer.from_url(url, auth=auth)                         # sync Renderer 
   `cookies` / `storage_state` for cookies. Configured headers aren't added to
   WebSocket connections.
 - Limits: 200 cookies, 50 origins, 30 headers per origin, 8 KiB per header value,
-  1 MiB of secret values in total.
+  1 MiB of secret values in total (IndexedDB counted as its JSON size).
+- Headers for the asset bundle's origin (`https://bundle.dravenpdf.invalid`) are
+  rejected: the bundle is served from memory, so they would never be sent.
 
 ### Preparing the page (Python only)
 
@@ -373,8 +395,11 @@ dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--mar
                       [--viewport 1920x1080] [--device-scale-factor 2] [--locale de-DE]
                       [--timezone Europe/Berlin] [--color-scheme dark] [--reduced-motion reduce]
                       [--prefer-css-page-size] [--css-margins] [--tagged] [--outline]
-                      [--wait-for-expression "window.done === true"]
+                      [--wait-for-expression "window.done === true"] [--auth auth.json]
 dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
+                      [--auth auth.json]
+# --auth: RenderAuth JSON ({"cookies", "storage_state", "headers"}), or a file saved by
+# Playwright's context.storage_state(path=...). Its contents never appear in messages.
 dravenpdf merge       a.pdf b.pdf ... -o out.pdf
 dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)
 dravenpdf extract     in.pdf 2-5,8 -o out.pdf

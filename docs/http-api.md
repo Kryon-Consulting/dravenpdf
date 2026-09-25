@@ -35,20 +35,24 @@ development only). Keys are compared in constant time. `/healthz`, `/readyz`,
 
 | Endpoint | Body | Response |
 |---|---|---|
-| `POST /v1/render/html` | `{"html", "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
-| `POST /v1/render/url` | `{"url", "options"?, "post"?, "filename"?}` | `application/pdf` |
-| `POST /v1/render/template` | `{"template", "data"?, "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
-| `POST /v1/render/bundle` | multipart: `files` (assets; each file's name is its bundle path), `html` or a file named `index.html`, `data`? (JSON: render as a template), `options`? / `post`? (JSON), `filename`? | `application/pdf` |
+| `POST /v1/render/html` | `{"html", "base_url"?, "options"?, "post"?, "filename"?, "auth"?}` | `application/pdf` |
+| `POST /v1/render/url` | `{"url", "options"?, "post"?, "filename"?, "auth"?}` | `application/pdf` |
+| `POST /v1/render/template` | `{"template", "data"?, "base_url"?, "options"?, "post"?, "filename"?, "auth"?}` | `application/pdf` |
+| `POST /v1/render/bundle` | multipart: `files` (assets; each file's name is its bundle path), `html` or a file named `index.html`, `data`? (JSON: render as a template), `options`? / `post`? / `auth`? (JSON), `filename`? | `application/pdf` |
 
 - `options` is `RenderOptions` (see [library-api.md](library-api.md#renderoptions)):
   paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
   capped at `DRAVENPDF_RENDER_TIMEOUT_MS`. It covers the whole request, including
   time spent waiting for a free browser and (re)launching Chromium.
-- `/v1/render/url` takes an optional `auth` object for pages behind a login:
-  `{"cookies": [...], "storage_state": {...}, "headers": {"<origin>": {"Name": "value"}}}`
-  (see [library-api.md](library-api.md#rendering-pages-behind-a-login)). Storage state
-  is sent as data (Playwright's `storage_state()` JSON), never a server path. It applies
-  to that one render. It is unrelated to `X-API-Key`, which authenticates the caller to
+- Every render endpoint takes an optional `auth` object for pages and resources behind
+  a login: `{"cookies": [...], "storage_state": {...}, "headers": {"<origin>": {"Name":
+  "value"}}}` (JSON body field; for `/v1/render/bundle` a form field holding that JSON).
+  See [library-api.md](library-api.md#rendering-pages-behind-a-login) for where each
+  credential takes effect: headers reach their exact origin from any page; cookies follow
+  Chromium's rules (from HTML, templates and bundles only `SameSite=None; Secure` ones
+  reach other sites); localStorage and IndexedDB apply on pages of their origin. Storage
+  state is sent as data (Playwright's `storage_state(indexed_db=True)` JSON), never a
+  server path. It applies to that one render. It is unrelated to `X-API-Key`, which authenticates the caller to
   dravenpdf. Credential values never appear in error messages, logs, metrics or
   response headers.
 

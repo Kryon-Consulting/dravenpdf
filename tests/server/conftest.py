@@ -57,8 +57,10 @@ class FakeRenderer:
         *,
         base_url: str | None = None,
         assets: dict[str, bytes] | None = None,
+        auth: Any = None,
     ) -> PdfDocument:
         self.assets.append(assets)
+        self.auth.append(auth)
         return await self._answer("html", html, options)
 
     async def from_url(
@@ -71,6 +73,7 @@ class FakeRenderer:
         self, template: str, data: Any, options: RenderOptions | None = None, **kwargs: Any
     ) -> PdfDocument:
         self.assets.append(kwargs.get("assets"))
+        self.auth.append(kwargs.get("auth"))
         return await self._answer("template", (template, data), options)
 
 

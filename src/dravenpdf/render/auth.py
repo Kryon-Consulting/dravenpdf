@@ -1,8 +1,8 @@
 """Credentials for rendering pages behind a login.
 
 :class:`RenderAuth` holds everything a render needs to be logged in: cookies,
-Playwright storage state (cookies plus ``localStorage`` per origin), and extra
-request headers for exact origins. It is deliberately separate from
+Playwright storage state (cookies plus ``localStorage`` and IndexedDB per origin),
+and extra request headers for exact origins. It is deliberately separate from
 :class:`~dravenpdf.options.RenderOptions`, which describes layout.
 
 Every credential value is a :class:`pydantic.SecretStr`, so it is masked in
@@ -18,15 +18,37 @@ Where each part is applied:
   (domain, path, Secure, SameSite) and a later render starts logged out;
 - headers are added by the request guard, per request and per redirect hop, only
   when that hop's origin (scheme, host and port) exactly matches a configured one.
+
+Every render source takes the same credentials, and each takes effect by origin, as
+in a browser (decision D11):
+
+- headers reach requests to their origin from any page;
+- cookies go where Chromium sends them. Requests from a page on another site, which
+  includes ``from_html`` (``about:blank``), local files and asset bundles, only carry
+  cookies marked ``SameSite=None; Secure``;
+- localStorage and IndexedDB belong to their origin: a page on that origin (the page
+  itself for ``from_url``, or one it navigates to) sees them. A page on another origin
+  doesn't, and Chromium partitions the storage of frames embedded in another site.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    Secret,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+
+from dravenpdf.render.assets import ORIGIN as BUNDLE_ORIGIN
 
 MAX_COOKIES = 200
 MAX_ORIGINS = 50
@@ -176,23 +198,57 @@ class LocalStorageItem(_Model):
         return value
 
 
+IndexedDbSnapshot = Secret[list[dict[str, Any]]]
+"""Playwright's IndexedDB snapshot for one origin (``storage_state(indexed_db=True)``).
+Kept whole and opaque: databases, stores, records and indexes go to Playwright as
+they came."""
+
+
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), default=str))
+
+
 class OriginStorage(_Model):
     origin: str
     local_storage: list[LocalStorageItem] = Field(
         default_factory=list, alias="localStorage", max_length=MAX_LOCAL_STORAGE_ITEMS
     )
+    indexed_db: IndexedDbSnapshot | None = Field(default=None, alias="indexedDB")
 
     @field_validator("origin")
     @classmethod
     def _valid_origin(cls, value: str) -> str:
         return canonical_origin(value)
 
+    @field_validator("indexed_db")
+    @classmethod
+    def _valid_indexed_db(cls, value: IndexedDbSnapshot | None) -> IndexedDbSnapshot | None:
+        if value is None:
+            return None
+        databases = value.get_secret_value()
+        for database in databases:
+            if not isinstance(database.get("name"), str) or not isinstance(
+                database.get("stores"), list
+            ):
+                raise ValueError(
+                    "indexedDB must be Playwright's snapshot: databases with name and stores"
+                )
+        if _json_size(databases) > MAX_TOTAL_BYTES:
+            raise ValueError(f"indexedDB is larger than {MAX_TOTAL_BYTES} bytes")
+        return value
+
+    def secret_size(self) -> int:
+        size = sum(len(item.value.get_secret_value()) for item in self.local_storage)
+        if self.indexed_db is not None:
+            size += _json_size(self.indexed_db.get_secret_value())
+        return size
+
 
 class StorageState(_Model):
     """Playwright's storage-state format (``context.storage_state()`` output), as data.
 
-    Accepts Playwright's own JSON (``httpOnly``, ``sameSite``, ``localStorage``) as
-    well as snake_case names.
+    Accepts Playwright's own JSON (``httpOnly``, ``sameSite``, ``localStorage``,
+    ``indexedDB`` from ``storage_state(indexed_db=True)``) as well as snake_case names.
     """
 
     cookies: list[Cookie] = Field(default_factory=list, max_length=MAX_COOKIES)
@@ -230,6 +286,10 @@ class RenderAuth(_Model):
         result: dict[str, dict[str, SecretStr]] = {}
         for origin, headers in value.items():
             canonical = canonical_origin(origin)
+            if canonical == BUNDLE_ORIGIN:
+                raise ValueError(
+                    f"{canonical} is served from memory, so headers for it are never sent"
+                )
             if canonical in result:
                 raise ValueError(f"origin {canonical} is listed twice")
             if len(headers) > MAX_HEADERS_PER_ORIGIN:
@@ -255,11 +315,7 @@ class RenderAuth(_Model):
         total = sum(len(c.value.get_secret_value()) for c in self.all_cookies())
         total += sum(len(v.get_secret_value()) for hs in self.headers.values() for v in hs.values())
         if self.storage_state is not None:
-            total += sum(
-                len(item.value.get_secret_value())
-                for o in self.storage_state.origins
-                for item in o.local_storage
-            )
+            total += sum(o.secret_size() for o in self.storage_state.origins)
         if total > MAX_TOTAL_BYTES:
             raise ValueError(f"credentials are larger than {MAX_TOTAL_BYTES} bytes in total")
         return self
@@ -275,23 +331,22 @@ class RenderAuth(_Model):
         return [c.to_playwright() for c in self.all_cookies()]
 
     def playwright_storage_state(self) -> dict[str, Any] | None:
-        """For ``new_context(storage_state=...)``: the localStorage part only (cookies
+        """For ``new_context(storage_state=...)``: localStorage and IndexedDB (cookies
         go through ``add_cookies``, which accepts url-scoped cookies). Contains secrets."""
         if self.storage_state is None or not self.storage_state.origins:
             return None
-        return {
-            "cookies": [],
-            "origins": [
-                {
-                    "origin": o.origin,
-                    "localStorage": [
-                        {"name": i.name, "value": i.value.get_secret_value()}
-                        for i in o.local_storage
-                    ],
-                }
-                for o in self.storage_state.origins
-            ],
-        }
+        origins: list[dict[str, Any]] = []
+        for o in self.storage_state.origins:
+            origin: dict[str, Any] = {
+                "origin": o.origin,
+                "localStorage": [
+                    {"name": i.name, "value": i.value.get_secret_value()} for i in o.local_storage
+                ],
+            }
+            if o.indexed_db is not None:
+                origin["indexedDB"] = o.indexed_db.get_secret_value()
+            origins.append(origin)
+        return {"cookies": [], "origins": origins}
 
     def headers_for(self, url: str) -> dict[str, str]:
         """Configured headers for the exact origin of ``url`` (lowercase names).

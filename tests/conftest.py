@@ -78,12 +78,42 @@ fetch('/auth/api2').then(r => r.text()).then(t => {
 </script>"""
 
 
+# IndexedDB login: /auth/idb-write?token=... stores a token, /auth/idb-page shows it.
+IDB_SCRIPT = """<p id="out">waiting</p><script>
+const out = document.getElementById('out');
+const done = t => { out.textContent = t; window.__DRAVENPDF_READY__ = true; };
+const open = indexedDB.open('app', 1);
+open.onupgradeneeded = () => open.result.createObjectStore('auth');
+open.onerror = () => done('IDB ERROR');
+open.onsuccess = () => {
+  const db = open.result;
+  const token = new URLSearchParams(location.search).get('token');
+  if (token) {
+    const tx = db.transaction('auth', 'readwrite');
+    tx.objectStore('auth').put({token}, 'session');
+    tx.oncomplete = () => done('STORED');
+  } else {
+    const get = db.transaction('auth').objectStore('auth').get('session');
+    get.onsuccess = () => done(get.result ? 'TOKEN ' + get.result.token : 'NO TOKEN');
+  }
+};
+</script>"""
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         pass
 
-    def _send(self, status: int, body: bytes = b"", content_type: str = "text/html") -> None:
+    def _send(
+        self,
+        status: int,
+        body: bytes = b"",
+        content_type: str = "text/html",
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -129,6 +159,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200 if tenant_ok else 401, SVG, "image/svg+xml")
         elif path == "/auth/api2":
             self._send(200 if tenant_ok else 401, b"API2-OK" if tenant_ok else b"NO", "text/plain")
+        elif path == "/auth/cors-api":  # readable by pages on any origin
+            body = b"CORS-API-OK" if tenant_ok else b"API-DENIED"
+            cors = {"Access-Control-Allow-Origin": "*"}
+            self._send(200 if tenant_ok else 401, body, "text/plain", cors)
+        elif path in ("/auth/idb-write", "/auth/idb-page"):
+            self._send(200, IDB_SCRIPT.encode())
         elif path == "/auth/echo":
             self._send(200, SVG, "image/svg+xml")
         elif path == "/auth/page-with":

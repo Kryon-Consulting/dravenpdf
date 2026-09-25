@@ -11,9 +11,10 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import typer
+from pydantic import ValidationError
 
 from dravenpdf import __version__
 from dravenpdf.document.images import ImageFormat
@@ -32,6 +33,7 @@ from dravenpdf.options import (
     Viewport,
     WaitUntil,
 )
+from dravenpdf.render.auth import RenderAuth, StorageState
 from dravenpdf.render.sync import Renderer
 
 app = typer.Typer(
@@ -47,14 +49,45 @@ app = typer.Typer(
 Output = Annotated[Path, typer.Option("--output", "-o", help="Output file, or - for stdout.")]
 OutDir = Annotated[Path, typer.Option("--output", "-o", help="Output folder.")]
 InputPdf = Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="Input PDF.")]
+AuthFile = Annotated[
+    Path | None,
+    typer.Option(
+        "--auth",
+        exists=True,
+        dir_okay=False,
+        help="JSON credentials for the pages loaded: RenderAuth (cookies, storage_state, "
+        "headers) or a Playwright storage_state() file.",
+    ),
+]
 PagesOpt = Annotated[
     str | None, typer.Option("--pages", help="1-based pages, e.g. 1,3-5,8- (default: all).")
 ]
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     typer.secho(f"error: {message}", fg=typer.colors.RED, err=True)
     raise typer.Exit(1)
+
+
+def _load_auth(path: Path | None) -> RenderAuth | None:
+    """Read --auth. Messages never quote the file, which holds secrets."""
+    if path is None:
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _fail(f"--auth {path}: not a JSON file")
+    try:
+        if isinstance(raw, dict) and raw and set(raw) <= {"cookies", "origins"}:
+            # Playwright's context.storage_state() output, as saved.
+            return RenderAuth(storage_state=StorageState.model_validate(raw))
+        return RenderAuth.model_validate(raw)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+            for e in exc.errors(include_input=False)
+        )
+        _fail(f"--auth {path}: {problems}")
 
 
 def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
@@ -218,8 +251,10 @@ def render(
     wait_for_expression: Annotated[
         str | None, typer.Option(help="JavaScript expression to wait for (truthy).")
     ] = None,
+    auth: AuthFile = None,
 ) -> None:
     """Render an HTML file or a web page to PDF. Load problems are printed as warnings."""
+    render_auth = _load_auth(auth)
     if media not in ("print", "screen"):
         _fail("--media must be print or screen")
     options = _render_options(
@@ -248,12 +283,12 @@ def render(
         on_blocked="skip" if skip_blocked else "fail",
     ) as renderer:
         if _is_url(source):
-            doc = renderer.from_url(source, options)
+            doc = renderer.from_url(source, options, auth=render_auth)
         else:
             path = Path(source)
             if not path.is_file():
                 _fail(f"no such file: {source}")
-            doc = renderer.from_file(path, options)
+            doc = renderer.from_file(path, options, auth=render_auth)
     _write_pdf(doc, output, compress=compress)
 
 
@@ -273,8 +308,10 @@ def template(
         Path | None, typer.Option(exists=True, dir_okay=False, help="Footer HTML file.")
     ] = None,
     allow_private: Annotated[bool, typer.Option(help="Allow private/localhost addresses.")] = False,
+    auth: AuthFile = None,
 ) -> None:
     """Render a Jinja2 template with JSON data. Assets load from the template's folder."""
+    render_auth = _load_auth(auth)
     values = json.loads(data.read_text()) if data is not None else {}
     if not isinstance(values, dict):
         _fail("--data must contain a JSON object")
@@ -283,7 +320,7 @@ def template(
     )
     with Renderer(allow_private_network=allow_private) as renderer:
         doc = renderer.from_template(
-            template_file.name, values, options, template_dir=template_file.parent
+            template_file.name, values, options, template_dir=template_file.parent, auth=render_auth
         )
     _write_pdf(doc, output)
 

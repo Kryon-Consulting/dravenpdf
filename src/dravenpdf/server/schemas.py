@@ -54,6 +54,10 @@ class _RenderRequest(_Body):
     options: RenderOptions = Field(default_factory=RenderOptions)
     post: PostProcess | None = None
     filename: str = Field(default="document.pdf", max_length=200)
+    auth: RenderAuth | None = None
+    """Credentials for the pages and resources being rendered (cookies, storage state,
+    per-origin headers). Unrelated to the X-API-Key that authenticates the caller to
+    this service."""
 
     @field_validator("filename")
     @classmethod
@@ -68,9 +72,6 @@ class RenderHtmlRequest(_RenderRequest):
 
 class RenderUrlRequest(_RenderRequest):
     url: str = Field(min_length=1)
-    auth: RenderAuth | None = None
-    """Credentials for the page being rendered (cookies, storage state, per-origin
-    headers). Unrelated to the X-API-Key that authenticates the caller to this service."""
 
 
 class RenderTemplateRequest(_RenderRequest):
