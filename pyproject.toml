@@ -43,6 +43,7 @@ dev = [
     "httpx>=0.27",
     "mypy>=1.11",
     "ruff>=0.6",
+    "deptry>=0.25.1",
 ]
 
 [build-system]
@@ -77,6 +78,11 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "ASYNC110"]
+
+# ---------------------------------------------------------------- deptry
+[tool.deptry.per_rule_ignores]
+DEP002 = ["python-multipart"]  # FastAPI imports it to parse form uploads
+DEP003 = ["starlette"]         # FastAPI's own dependency; it pins the version
 
 # ---------------------------------------------------------------- mypy
 [tool.mypy]

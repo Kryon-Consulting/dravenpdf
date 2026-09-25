@@ -9,6 +9,7 @@ browser:
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
+	uv run deptry src
 
 format:
 	uv run ruff check --fix .

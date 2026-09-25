@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from PIL import Image
 
-from dravenpdf import PdfDocument, PdfOperationError
+from dravenpdf import LimitExceededError, PdfDocument, PdfOperationError
 from dravenpdf.document.images import PAPER_SIZES_PT
 
 
@@ -82,6 +82,21 @@ def test_to_images_jpeg_subset(two_pages: PdfDocument) -> None:
 def test_to_images_errors(two_pages: PdfDocument, kwargs: dict[str, object], message: str) -> None:
     with pytest.raises(PdfOperationError, match=message):
         two_pages.to_images(**kwargs)  # type: ignore[arg-type]
+
+
+def test_to_images_pixel_limit_checked_before_rendering(two_pages: PdfDocument) -> None:
+    # 72 x 72 pt at 144 dpi is 144 x 144 = 20,736 pixels.
+    assert len(two_pages.to_images(dpi=144, max_pixels=144 * 144)) == 2
+    with pytest.raises(LimitExceededError, match="page 1 would be 20,736 pixels"):
+        two_pages.to_images(dpi=144, max_pixels=144 * 144 - 1)
+
+
+def test_to_images_output_limit(two_pages: PdfDocument) -> None:
+    one = len(two_pages.to_images(pages=[0])[0])
+
+    assert len(two_pages.to_images(max_total_bytes=2 * one)) == 2
+    with pytest.raises(LimitExceededError, match="larger than"):
+        two_pages.to_images(max_total_bytes=2 * one - 1)
 
 
 def test_pdfium_calls_from_many_threads(two_pages: PdfDocument) -> None:

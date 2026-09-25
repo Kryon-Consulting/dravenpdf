@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     max_queue: int = Field(default=16, ge=0)
     render_timeout_ms: int = Field(default=30_000, gt=0, le=MAX_TIMEOUT_MS)
     max_body_mb: float = Field(default=25, gt=0)
+    # Output limits: a small upload can ask for a lot of work.
+    max_output_mb: float = Field(default=100, gt=0)
+    max_image_megapixels: float = Field(default=40, gt=0)
     # Comma-separated; empty/unset means "any public host".
     allowed_hosts: str = ""
     browser_recycle_after: int = Field(default=500, ge=1)
@@ -40,3 +43,11 @@ class Settings(BaseSettings):
     @property
     def max_body_bytes(self) -> int:
         return int(self.max_body_mb * 1024 * 1024)
+
+    @property
+    def max_output_bytes(self) -> int:
+        return int(self.max_output_mb * 1024 * 1024)
+
+    @property
+    def max_image_pixels(self) -> int:
+        return int(self.max_image_megapixels * 1_000_000)

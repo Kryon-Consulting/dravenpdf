@@ -19,6 +19,7 @@ from dravenpdf import (
     RenderTimeoutError,
     TemplateError,
 )
+from dravenpdf.server import deps
 from dravenpdf.server.config import Settings
 
 from .conftest import API_KEY, AUTH, FakeRenderer, make_client, pdf_bytes
@@ -360,6 +361,65 @@ def test_images_to_pdf_and_back(client: TestClient) -> None:
         headers=AUTH,
     )
     assert zip_names(images.content) == ["page-2.jpg"]
+
+
+def test_pdf_to_images_limits(fake: FakeRenderer) -> None:
+    # pdf_bytes pages are 200 x 300 pt: 600 x 900 = 540,000 pixels at 216 dpi.
+    settings = Settings(api_key=API_KEY, max_image_megapixels=0.5, max_output_mb=0.001)
+    with make_client(settings, fake) as c:
+        too_many_pixels = c.post(
+            "/v1/convert/pdf-to-images",
+            files={"file": upload(pdf_bytes(1))},
+            data={"dpi": "216"},
+            headers=AUTH,
+        )
+        too_many_bytes = c.post(
+            "/v1/convert/pdf-to-images",
+            files={"file": upload(pdf_bytes(40))},
+            data={"dpi": "10"},
+            headers=AUTH,
+        )
+
+    assert too_many_pixels.status_code == 422
+    assert too_many_pixels.json()["error"]["code"] == "limit_exceeded"
+    assert "540,000 pixels" in too_many_pixels.json()["error"]["message"]
+    assert too_many_bytes.status_code == 422
+    assert too_many_bytes.json()["error"]["code"] == "limit_exceeded"
+
+
+def test_split_output_limit(fake: FakeRenderer) -> None:
+    source = pdf_bytes(1)
+    settings = Settings(api_key=API_KEY, max_output_mb=len(source) * 3.5 / 1024 / 1024)
+    with make_client(settings, fake) as c:
+        ok = c.post(
+            "/v1/pdf/split",
+            files={"file": upload(source)},
+            data={"ranges": ["1"] * 2},
+            headers=AUTH,
+        )
+        too_big = c.post(
+            "/v1/pdf/split",
+            files={"file": upload(source)},
+            data={"ranges": ["1"] * 50},
+            headers=AUTH,
+        )
+
+    assert zip_names(ok.content) == ["part-1.pdf", "part-2.pdf"]
+    assert int(ok.headers["content-length"]) == len(ok.content)
+    assert too_big.status_code == 422
+    assert too_big.json()["error"]["code"] == "limit_exceeded"
+
+
+def test_zip_spilled_to_disk_streams_whole(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deps, "_ZIP_SPOOL_MEMORY_BYTES", 1)
+
+    response = client.post(
+        "/v1/pdf/split", files={"file": upload(pdf_bytes(5))}, data={"every": 1}, headers=AUTH
+    )
+
+    assert zip_names(response.content) == [f"part-{i}.pdf" for i in range(1, 6)]
 
 
 def test_text(client: TestClient) -> None:

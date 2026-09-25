@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Iterable, Sequence
 from os import PathLike
@@ -289,7 +290,10 @@ class PdfDocument:
                 ),
                 base_url=base_url,
             )
-            result = result.overlay(stamp, opacity=opacity, pages=indices, under=under)
+            # Overlaying is CPU-bound pikepdf work; keep it off the event loop.
+            result = await asyncio.to_thread(
+                result.overlay, stamp, opacity=opacity, pages=indices, under=under
+            )
         return result
 
     # ------------------------------------------------------------------ images and text
@@ -301,10 +305,22 @@ class PdfDocument:
         fmt: ImageFormat = "png",
         pages: Iterable[int] | None = None,
         jpeg_quality: int = 85,
+        max_pixels: int | None = None,
+        max_total_bytes: int | None = None,
     ) -> list[bytes]:
-        """Render pages (0-based ``pages``, default all) to PNG or JPEG bytes."""
+        """Render pages (0-based ``pages``, default all) to PNG or JPEG bytes.
+
+        ``max_pixels`` (per page) and ``max_total_bytes`` (all images) raise
+        :class:`LimitExceededError` when passed; see ``images.pdf_to_images``.
+        """
         return image_ops.pdf_to_images(
-            self.to_bytes(), dpi=dpi, fmt=fmt, pages=pages, jpeg_quality=jpeg_quality
+            self.to_bytes(),
+            dpi=dpi,
+            fmt=fmt,
+            pages=pages,
+            jpeg_quality=jpeg_quality,
+            max_pixels=max_pixels,
+            max_total_bytes=max_total_bytes,
         )
 
     def extract_text(self) -> list[str]:

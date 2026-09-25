@@ -23,6 +23,7 @@ uv run playwright install chromium
 | Task | Command |
 |---|---|
 | Lint | `uv run ruff check .` |
+| Dependency check | `uv run deptry src` (imports vs. declared dependencies) |
 | Format | `uv run ruff format .` |
 | Type check | `uv run mypy src` |
 | Unit tests (no browser) | `uv run pytest -m "not browser"` |
@@ -66,8 +67,8 @@ blocked, which is how redirect and SSRF tests get a "forbidden" target.
 
 ## Docker
 
-The image is based on `mcr.microsoft.com/playwright/python` (Chromium and its
-system libraries already included), plus Noto fonts. It runs
+The image is based on `python:3.12-slim-bookworm`. `playwright install --with-deps
+chromium` adds Chromium and its system libraries at build time, plus Noto fonts. It runs
 `dravenpdf serve` as a non-root user. Chromium runs with `--no-sandbox`
 inside the container, so the container is the isolation boundary. Don't run
 the service outside a container with untrusted HTML.

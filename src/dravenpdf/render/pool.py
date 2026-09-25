@@ -180,10 +180,14 @@ class BrowserPool:
     # ------------------------------------------------------------------ contexts
 
     @asynccontextmanager
-    async def context(self, **options: Any) -> AsyncIterator[BrowserContext]:
+    async def context(
+        self, *, deadline: float | None = None, **options: Any
+    ) -> AsyncIterator[BrowserContext]:
         """A new, isolated browser context; closed when the block exits.
 
-        Keyword arguments go to Playwright's ``browser.new_context()``.
+        ``deadline`` (event-loop time, as from ``loop.time()``) bounds the wait for a
+        free slot: past it, :class:`TimeoutError` is raised. Other keyword arguments
+        go to Playwright's ``browser.new_context()``.
         """
         if self._semaphore.locked() and self._waiting >= self.max_queue:
             raise PoolExhaustedError(
@@ -191,7 +195,8 @@ class BrowserPool:
             )
         self._waiting += 1
         try:
-            await self._semaphore.acquire()
+            async with asyncio.timeout_at(deadline):
+                await self._semaphore.acquire()
         finally:
             self._waiting -= 1
         self._active += 1

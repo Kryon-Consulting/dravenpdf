@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.options import PaperSize
-from dravenpdf.server.deps import pages_arg, pdf_response, read_pdf, require_api_key, zip_response
+from dravenpdf.server.deps import (
+    pages_arg,
+    pdf_response,
+    read_pdf,
+    require_api_key,
+    settings_of,
+    zip_response,
+)
 from dravenpdf.server.schemas import TextResponse
 
 router = APIRouter(prefix="/v1/convert", tags=["convert"], dependencies=[Depends(require_api_key)])
@@ -41,6 +48,7 @@ async def images_to_pdf(
     responses={200: {"content": {"application/zip": {}}, "description": "page-N.png/jpg"}},
 )
 async def pdf_to_images(
+    request: Request,
     file: Annotated[UploadFile, File(description="A PDF.")],
     dpi: Annotated[int, Form()] = 150,
     format: Annotated[ImageFormat, Form()] = "png",
@@ -48,10 +56,21 @@ async def pdf_to_images(
 ) -> Response:
     doc = await read_pdf(file)
     targets = pages_arg(pages, doc) or list(range(doc.page_count))
-    images = await asyncio.to_thread(doc.to_images, dpi=dpi, fmt=format, pages=targets)
+    settings = settings_of(request)
+    images = await asyncio.to_thread(
+        doc.to_images,
+        dpi=dpi,
+        fmt=format,
+        pages=targets,
+        max_pixels=settings.max_image_pixels,
+        max_total_bytes=settings.max_output_bytes,
+    )
     extension = "jpg" if format == "jpeg" else "png"
     files = [(f"page-{i + 1}.{extension}", data) for i, data in zip(targets, images, strict=True)]
-    return zip_response(files, "pages.zip")
+    # PNG and JPEG are compressed already; deflating them again only costs CPU.
+    return await zip_response(
+        files, "pages.zip", max_bytes=settings.max_output_bytes, compress=False
+    )
 
 
 @router.post("/text")

@@ -13,6 +13,7 @@ from dravenpdf import errors
         (errors.BlockedRequestError("x", url="file:///etc/passwd"), "blocked_request"),
         (errors.InvalidPdfError("x"), "invalid_pdf"),
         (errors.PdfOperationError("x"), "invalid_request"),
+        (errors.LimitExceededError("x"), "limit_exceeded"),
         (errors.PoolExhaustedError("x"), "busy"),
     ],
 )

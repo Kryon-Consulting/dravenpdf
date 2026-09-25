@@ -22,6 +22,7 @@ from dravenpdf.server.deps import (
     read_pdf,
     renderer_of,
     require_api_key,
+    settings_of,
     zip_response,
 )
 from dravenpdf.server.errors import ApiError
@@ -45,6 +46,7 @@ async def merge(
 
 @router.post("/split", response_class=Response, responses=ZIP_RESPONSE)
 async def split(
+    request: Request,
     file: PdfFile,
     every: Annotated[int | None, Form(description="Pages per part.")] = None,
     ranges: Annotated[
@@ -53,8 +55,9 @@ async def split(
 ) -> Response:
     doc = await read_pdf(file)
     parts = await asyncio.to_thread(doc.split, every=every, ranges=ranges)
-    files = [(f"part-{i}.pdf", await asyncio.to_thread(p.to_bytes)) for i, p in enumerate(parts, 1)]
-    return zip_response(files, "parts.zip")
+    # A generator, so each part is saved in zip_response's worker thread and then dropped.
+    files = ((f"part-{i}.pdf", p.to_bytes()) for i, p in enumerate(parts, 1))
+    return await zip_response(files, "parts.zip", max_bytes=settings_of(request).max_output_bytes)
 
 
 @router.post("/extract", response_class=Response, responses=PDF_RESPONSE)
