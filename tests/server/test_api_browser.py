@@ -139,3 +139,33 @@ def test_render_url_behind_a_login(server: Server, caplog: pytest.LogCaptureFixt
     assert "LOGIN REQUIRED" in pdf_text(PdfDocument.from_bytes(anonymous.content))[0]
     assert "s3cret-alice" not in str(logged_in.headers)
     assert "s3cret-alice" not in caplog.text
+
+
+def test_render_html_and_bundle_with_auth(server: Server) -> None:
+    import json
+
+    origin = server.url("", host="localhost")
+    page = (
+        "<p id='api'></p><script>"
+        f"fetch('{server.url('/auth/cors-api')}').then(r => r.text()).then(t => {{"
+        "document.getElementById('api').textContent = t; window.__DRAVENPDF_READY__ = true; });"
+        "</script>"
+    )
+    auth = {"headers": {origin: {"X-Tenant": "acme"}}}
+    options = {"wait_for_ready_flag": True}
+
+    with make_client(Settings(api_key=API_KEY, allowed_hosts="localhost")) as c:
+        html = c.post(
+            "/v1/render/html", json={"html": page, "auth": auth, "options": options}, headers=AUTH
+        )
+        bundle = c.post(
+            "/v1/render/bundle",
+            data={"html": page, "auth": json.dumps(auth), "options": json.dumps(options)},
+            headers=AUTH,
+        )
+        anonymous = c.post("/v1/render/html", json={"html": page, "options": options}, headers=AUTH)
+
+    for response in (html, bundle):
+        assert response.status_code == 200, response.text
+        assert "CORS-API-OK" in pdf_text(PdfDocument.from_bytes(response.content))[0]
+    assert "API-DENIED" in pdf_text(PdfDocument.from_bytes(anonymous.content))[0]

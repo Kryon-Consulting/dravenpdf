@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -611,12 +612,76 @@ def test_render_url_rejects_bad_auth_without_echoing_it(
     assert fake.calls == []
 
 
-def test_auth_only_on_the_url_endpoint(client: TestClient) -> None:
-    response = client.post(
-        "/v1/render/html", json={"html": "x", "auth": {"cookies": []}}, headers=AUTH
-    )
+HEADER_AUTH = {"headers": {"https://api.example.com": {"Authorization": "Bearer s3cret"}}}
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body"),
+    [
+        ("/v1/render/html", {"html": "<img src='https://api.example.com/i.png'>"}),
+        ("/v1/render/template", {"template": "<p>{{ x }}</p>", "data": {"x": 1}}),
+    ],
+)
+def test_every_json_render_endpoint_passes_auth(
+    client: TestClient, fake: FakeRenderer, endpoint: str, body: dict[str, object]
+) -> None:
+    response = client.post(endpoint, json={**body, "auth": HEADER_AUTH}, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert auth.headers_for("https://api.example.com/x") == {"authorization": "Bearer s3cret"}
+
+
+@pytest.mark.parametrize("data", [None, '{"x": 1}'])
+def test_bundle_passes_auth(client: TestClient, fake: FakeRenderer, data: str | None) -> None:
+    form = {"html": "<p>{{ x }}</p>", "auth": json.dumps(HEADER_AUTH)}
+    if data is not None:
+        form["data"] = data
+
+    response = client.post("/v1/render/bundle", data=form, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert auth.headers_for("https://api.example.com/") == {"authorization": "Bearer s3cret"}
+
+
+@pytest.mark.parametrize(
+    ("auth", "message"),
+    [
+        ('{"headers": {"https://a.example": {"X": "s3cret\\r\\n"}}}', "control"),
+        ('{"headers": {"https://bundle.dravenpdf.invalid": {"X": "s3cret"}}}', "never sent"),
+        ('{"storage_state": "/var/s3cret.json"}', "storage_state"),
+        ("not json s3cret", "auth"),
+    ],
+)
+def test_bundle_rejects_bad_auth_without_echoing_it(
+    client: TestClient, fake: FakeRenderer, auth: str, message: str
+) -> None:
+    response = client.post("/v1/render/bundle", data={"html": "x", "auth": auth}, headers=AUTH)
 
     assert response.status_code == 400
+    assert message in response.json()["error"]["message"]
+    assert "s3cret" not in response.text
+    assert fake.calls == []
+
+
+def test_indexed_db_state_is_accepted_and_masked(client: TestClient, fake: FakeRenderer) -> None:
+    records = [{"key": "s", "value": {"token": "s3cret"}}]
+    store = {"name": "auth", "autoIncrement": False, "indexes": [], "records": records}
+    snapshot = [{"name": "app", "version": 1, "stores": [store]}]
+    state = {"origins": [{"origin": "https://app.example.com", "indexedDB": snapshot}]}
+
+    response = client.post(
+        "/v1/render/url",
+        json={"url": "https://app.example.com/", "auth": {"storage_state": state}},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    (auth,) = fake.auth
+    assert "s3cret" not in repr(auth)
+    (origin,) = auth.playwright_storage_state()["origins"]
+    assert origin["indexedDB"] == snapshot
 
 
 # ---------------------------------------------------------------- encryption
@@ -755,9 +820,59 @@ def test_sign_and_verify_endpoints(signing_client: TestClient) -> None:
     assert [k["name"] for k in keys] == ["company"]
     assert "Server Signer" in keys[0]["subject"]
     assert signed.status_code == 200, signed.text
-    (info,) = checked.json()["signatures"]
-    assert info["ok"]  # intact, valid, trusted by the configured roots, whole document
+    body = checked.json()
+    (info,) = body["signatures"]
+    assert info["ok"]  # intact, valid, trusted by the configured roots
     assert info["reason"] == "Approved"
+    assert body["ok"]  # the document: signed, all ok, one covering the whole file
+    assert body["problems"] == []
+
+
+def test_verify_untrusted_and_integrity_only(signing_client: TestClient) -> None:
+    from dravenpdf import PdfDocument, SigningKey
+    from signing_fixture import make_p12
+
+    key = SigningKey.from_pkcs12(make_p12("Stranger", "pw")[0], "pw")
+    signed = PdfDocument.from_bytes(pdf_bytes()).sign(key).to_bytes()
+
+    def verify(**data: str) -> dict[str, object]:
+        response = signing_client.post(
+            "/v1/pdf/verify", files={"file": ("s.pdf", signed)}, data=data, headers=AUTH
+        )
+        assert response.status_code == 200, response.text
+        return response.json()  # type: ignore[no-any-return]
+
+    strict, lenient = verify(), verify(integrity_only="true")
+    unsigned = signing_client.post(
+        "/v1/pdf/verify", files={"file": upload(pdf_bytes())}, headers=AUTH
+    ).json()
+
+    assert (strict["ok"], strict["problems"]) == (False, ["Signature: the signer is not trusted"])
+    assert (lenient["ok"], lenient["problems"]) == (True, [])
+    assert (unsigned["ok"], unsigned["problems"]) == (False, ["the file has no signatures"])
+
+
+def test_verify_encrypted_signed_file(signing_client: TestClient) -> None:
+    from dravenpdf import SigningKey
+    from signing_fixture import USER, encrypted_then_signed, make_p12
+
+    data = encrypted_then_signed(SigningKey.from_pkcs12(make_p12("Enc", "pw")[0], "pw"))
+
+    checked = signing_client.post(
+        "/v1/pdf/verify",
+        files={"file": ("e.pdf", data)},
+        data={"password": USER, "integrity_only": "true"},
+        headers=AUTH,
+    )
+    wrong = signing_client.post(
+        "/v1/pdf/verify", files={"file": ("e.pdf", data)}, data={"password": "nope"}, headers=AUTH
+    )
+
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["ok"]
+    assert checked.json()["signatures"][0]["intact"]
+    assert wrong.status_code == 422
+    assert wrong.json()["error"]["code"] == "pdf_password"
 
 
 @pytest.mark.parametrize(

@@ -99,8 +99,11 @@ class Renderer:
         *,
         base_url: str | None = None,
         assets: Mapping[str, bytes] | None = None,
+        auth: RenderAuth | None = None,
     ) -> PdfDocument:
-        return self._run(self._async().from_html(html, options, base_url=base_url, assets=assets))
+        return self._run(
+            self._async().from_html(html, options, base_url=base_url, assets=assets, auth=auth)
+        )
 
     def from_url(
         self, url: str, options: RenderOptions | None = None, *, auth: RenderAuth | None = None
@@ -108,9 +111,13 @@ class Renderer:
         return self._run(self._async().from_url(url, options, auth=auth))
 
     def from_file(
-        self, path: str | PathLike[str], options: RenderOptions | None = None
+        self,
+        path: str | PathLike[str],
+        options: RenderOptions | None = None,
+        *,
+        auth: RenderAuth | None = None,
     ) -> PdfDocument:
-        return self._run(self._async().from_file(path, options))
+        return self._run(self._async().from_file(path, options, auth=auth))
 
     def from_template(
         self,
@@ -121,6 +128,7 @@ class Renderer:
         template_dir: str | PathLike[str] | None = None,
         base_url: str | None = None,
         assets: Mapping[str, bytes] | None = None,
+        auth: RenderAuth | None = None,
     ) -> PdfDocument:
         return self._run(
             self._async().from_template(
@@ -130,6 +138,7 @@ class Renderer:
                 template_dir=template_dir,
                 base_url=base_url,
                 assets=assets,
+                auth=auth,
             )
         )
 

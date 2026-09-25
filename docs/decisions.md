@@ -57,6 +57,26 @@ when a redirect leaves the original origin, and cookies after the first hop come
 the jar for the new URL. Values are `SecretStr` and Playwright's call logs (which list
 headers) are stripped from logs and errors.
 
+**Which sources, and where each credential takes effect.** Every render source takes
+`auth`: `from_url`, `from_html` (with or without `base_url`), `from_file`,
+`from_template` and asset bundles, in the library, CLI (`--auth FILE`) and HTTP API.
+The rules above don't change; what differs is the page's own origin:
+- *Headers* reach requests to their exact origin from any page.
+- *Cookies* go where Chromium sends them. A page on another site (`about:blank` for
+  `from_html`, `file://`, the bundle origin, or a web page on another site) only sends
+  `SameSite=None; Secure` cookies with its requests. The guard's first hop passes on
+  exactly Chromium's `Cookie` header, because `route.fetch` would otherwise add stored
+  cookies without SameSite. Redirect hops after the first still take cookies from the
+  jar for the new URL, without SameSite.
+- *localStorage and IndexedDB* (IndexedDB from `storage_state(indexed_db=True)`,
+  Playwright 1.51+) belong to their origin: a page on that origin sees them (the page
+  itself for `from_url`, or one the page navigates to). A page on another origin
+  doesn't, and Chromium partitions storage for frames embedded in another site.
+
+Credentials are rejected only when their use is impossible: headers for the in-memory
+bundle origin, which never reaches the network. Anything that can take effect somewhere
+is accepted, and the behaviour above is documented instead.
+
 ## D12 – Encryption, forms and signatures are in scope (replaces D8)
 - **Encryption:** pikepdf (AES-256). Permission flags are advisory; the docs say so.
 - **Forms:** fill and flatten existing AcroForms with pikepdf. Creating fillable
@@ -74,4 +94,10 @@ headers) are stripped from logs and errors.
   carrying signatures that verify as broken or a visible "signature" that isn't one.
 - **CLI `verify` is strict:** it exits 1 unless the file is signed, every signature is
   intact and trusted by a `--trust` root, and a signature covers the whole file.
-  `--integrity-only` drops the trust requirement.
+  `--integrity-only` drops the trust requirement. HTTP `verify` reports the same rule
+  as a document-level `ok` and `problems` (with `integrity_only`); both use
+  `signature_problems()`. A signature's own `ok` means intact, valid and trusted;
+  coverage is a separate fact, so earlier signatures of a multi-signed file are ok.
+- **Encrypted signed files verify as they are.** Verification reads the original
+  bytes, and pyHanko decrypts them with the password passed to the verify call (not
+  kept on the document). Writing is a separate path and still removes signatures.

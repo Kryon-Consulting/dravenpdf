@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from conftest import Server, pdf_text
+from conftest import Server, pdf_text, requests_tagged
 from dravenpdf import BlockedRequestError, IncompleteRenderError, PdfDocument
 from dravenpdf.cli import app
 
@@ -87,3 +87,45 @@ def test_render_warns_and_can_be_strict(tmp_path: Path) -> None:
     assert "warning:" in lenient.output
     assert "missing.png" in lenient.output
     assert isinstance(strict.exception, IncompleteRenderError)
+
+
+@pytest.mark.parametrize("kind", ["render_auth", "playwright_state"])
+def test_render_with_auth_file(tmp_path: Path, server: Server, kind: str) -> None:
+    origin = server.url("")
+    if kind == "render_auth":
+        auth = {"headers": {origin: {"X-Tenant": "acme"}}}
+        page = server.url("/auth/header-page")
+        expected = "API2-OK"
+    else:  # what context.storage_state() saves
+        auth = {"cookies": [], "origins": [{"origin": origin,
+                "localStorage": [{"name": "token", "value": "ls-t0ken"}]}]}  # fmt: skip
+        page = server.url("/auth/ls-page")
+        expected = "API-OK"
+    (tmp_path / "auth.json").write_text(json.dumps(auth))
+
+    result = runner.invoke(
+        app,
+        ["render", page, "-o", str(tmp_path / "out.pdf"), "--allow-private",
+         "--wait-for-ready-flag", "--auth", str(tmp_path / "auth.json")],
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    assert expected in pdf_text(PdfDocument.open(tmp_path / "out.pdf"))[0]
+
+
+def test_template_with_auth_file(tmp_path: Path, server: Server) -> None:
+    img = server.url("/auth/img.svg?tag=cli-template")
+    (tmp_path / "t.html").write_text(f'<p>{{{{ title }}}}</p><img src="{img}">')
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"headers": {server.url(""): {"X-Tenant": "acme"}}})
+    )
+
+    result = runner.invoke(
+        app,
+        ["template", str(tmp_path / "t.html"), "-o", str(tmp_path / "out.pdf"),
+         "--allow-private", "--auth", str(tmp_path / "auth.json")],
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    (headers,) = [h for _, _, h in requests_tagged("cli-template")]
+    assert headers.get("x-tenant") == "acme"

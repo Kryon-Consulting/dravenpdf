@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import datetime
+import io
+from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+if TYPE_CHECKING:
+    from dravenpdf import SigningKey
+
+USER, OWNER = "user-pw", "owner-pw"
 
 
 def make_p12(common_name: str = "Test Signer", password: str = "p12-pass") -> tuple[bytes, bytes]:
@@ -66,3 +73,24 @@ def make_tsa_material() -> tuple[bytes, bytes]:
         serialization.NoEncryption(),
     )
     return cert.public_bytes(serialization.Encoding.DER), key_der
+
+
+def encrypted_then_signed(*keys: SigningKey) -> bytes:
+    """A 2-page file encrypted first (``USER``/``OWNER``), then signed by each key in
+    turn as an encrypted file (fields ``Sig1``, ``Sig2``, ...)."""
+    import pikepdf
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+    from pyhanko.sign import signers
+
+    pdf = pikepdf.new()
+    for _ in range(2):
+        pdf.add_blank_page(page_size=(400, 400))
+    buffer = io.BytesIO()
+    pdf.save(buffer, encryption=pikepdf.Encryption(owner=OWNER, user=USER))
+    data = buffer.getvalue()
+    for number, key in enumerate(keys, start=1):
+        writer = IncrementalPdfFileWriter(io.BytesIO(data))
+        writer.encrypt(USER)
+        metadata = signers.PdfSignatureMetadata(field_name=f"Sig{number}")
+        data = signers.PdfSigner(metadata, signer=key._signer).sign_pdf(writer).getvalue()
+    return data

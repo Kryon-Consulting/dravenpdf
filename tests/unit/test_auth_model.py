@@ -193,3 +193,66 @@ def test_headers_force_interception() -> None:
     assert not RequestGuard(allow_private_network=True).checks_requests
     assert RequestGuard(allow_private_network=True, auth=auth).checks_requests
     assert not RequestGuard(allow_private_network=True, auth=RenderAuth()).checks_requests
+
+
+def test_first_hop_sends_exactly_the_browsers_cookies() -> None:
+    # No Cookie header from Chromium (e.g. SameSite withheld it): send none, rather than
+    # letting route.fetch fill one in from the cookie store.
+    page = {k: v for k, v in PAGE.items() if k != "Cookie"}
+
+    headers = hops().hop_headers(page, "https://a.example/", "https://a.example/", first_hop=True)
+
+    assert headers["cookie"] == ""
+
+
+IDB = [{"name": "app", "version": 1,
+        "stores": [{"name": "auth", "autoIncrement": False, "indexes": [],
+                    "records": [{"key": "s", "value": {"token": "s3cret-idb"}}]}]}]  # fmt: skip
+
+
+def test_indexed_db_snapshot_is_passed_through_and_masked() -> None:
+    state = StorageState.model_validate(
+        {"cookies": [], "origins": [{"origin": "https://A.example", "localStorage": [],
+                                     "indexedDB": IDB}]}
+    )  # fmt: skip
+    auth = RenderAuth(storage_state=state)
+
+    (origin,) = auth.playwright_storage_state()["origins"]  # type: ignore[index]
+    assert origin == {"origin": "https://a.example", "localStorage": [], "indexedDB": IDB}
+    for text in (repr(auth), str(auth), auth.model_dump_json(), str(auth.model_dump())):
+        assert "s3cret-idb" not in text
+
+
+@pytest.mark.parametrize(
+    ("indexed_db", "message"),
+    [
+        ([{"stores": [], "x": "s3cret-idb"}], "name and stores"),
+        ("s3cret-idb", "valid list"),
+        ([{"name": "a", "stores": [{"records": ["s3cret-idb" * 110_000]}]}], "larger than"),
+    ],
+)
+def test_bad_indexed_db_is_rejected_without_echoing_it(indexed_db: object, message: str) -> None:
+    with pytest.raises(ValidationError) as info:
+        StorageState.model_validate(
+            {"origins": [{"origin": "https://a.example", "indexedDB": indexed_db}]}
+        )
+
+    assert message in str(info.value)
+    assert "s3cret-idb" not in str(info.value)
+
+
+def test_indexed_db_counts_towards_the_total_size() -> None:
+    big = [{"name": "a", "stores": [{"records": ["x" * (MAX_TOTAL_BYTES // 2)]}]}]
+    origins = [{"origin": f"https://{n}.example", "indexedDB": big} for n in ("a", "b")]
+
+    with pytest.raises(ValidationError, match="larger than"):
+        RenderAuth(storage_state=StorageState.model_validate({"origins": origins}))
+
+
+def test_headers_for_the_bundle_origin_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="served from memory"):
+        RenderAuth(headers={"https://bundle.dravenpdf.invalid": {"X-Key": "s3cret"}})
+    # Storage for the bundle's origin is fine: the bundle page runs on it.
+    StorageState.model_validate(
+        {"origins": [{"origin": "https://bundle.dravenpdf.invalid", "localStorage": []}]}
+    )

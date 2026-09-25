@@ -78,12 +78,32 @@ auth = RenderAuth(
 )
 doc = await r.from_url("https://app.example.com/reports/42", auth=auth)
 doc = renderer.from_url(url, auth=auth)                         # sync Renderer too
+doc = await r.from_html(html, auth=auth)   # also from_file, from_template, bundles (assets=)
 ```
 
+Every `from_*` method takes `auth`. What each credential does depends on the origin of
+the page and of what it loads (decision D11):
+
+| Credential | Takes effect |
+|---|---|
+| `headers` | On requests to that exact origin, from any page (images, fonts, API calls, frames) |
+| `cookies` | Where Chromium sends them. From a page on another site (`from_html`'s `about:blank`, a local file, a bundle, or a web page on another site) only `SameSite=None; Secure` cookies are sent |
+| `localStorage` / `indexedDB` | On pages of that origin: the page itself with `from_url`, or a page it navigates to. Not in a page on another origin; Chromium partitions storage for embedded frames |
+
+So for HTML, files, templates and bundles, headers are the dependable way to reach
+protected images or APIs; a login kept in storage applies once a page of that origin
+loads.
+
 - **Cookies** (`url`, or `domain` + `path`; `expires`, `http_only`, `secure`,
-  `same_site`) and **storage state** (cookies plus `localStorage` per origin, in
-  Playwright's own format) go into the render's fresh browser context before the first
-  navigation. The browser applies its normal cookie rules.
+  `same_site`) and **storage state** (cookies plus `localStorage` and `indexedDB` per
+  origin, in Playwright's own format: `context.storage_state(indexed_db=True)`) go into
+  the render's fresh browser context before the first navigation. The browser applies
+  its normal cookie rules, SameSite included: the guard passes on exactly the cookies
+  Chromium chose for a request (on redirect hops after the first, the stored cookies
+  for the new URL, without SameSite).
+- **IndexedDB** snapshots are kept whole and opaque (a `Secret`, masked like the other
+  values), limited to the 1 MiB total, and restored before the first navigation, so a
+  login an app keeps in IndexedDB works on the first page load.
 - **Headers** are keyed by exact origin (scheme, host, port; default ports optional).
   The request guard adds them to every request and redirect hop for that origin only:
   images, fonts and API calls on the same origin get them; other origins don't.
@@ -101,7 +121,9 @@ doc = renderer.from_url(url, auth=auth)                         # sync Renderer 
   `cookies` / `storage_state` for cookies. Configured headers aren't added to
   WebSocket connections.
 - Limits: 200 cookies, 50 origins, 30 headers per origin, 8 KiB per header value,
-  1 MiB of secret values in total.
+  1 MiB of secret values in total (IndexedDB counted as its JSON size).
+- Headers for the asset bundle's origin (`https://bundle.dravenpdf.invalid`) are
+  rejected: the bundle is served from memory, so they would never be sent.
 
 ### Preparing the page (Python only)
 
@@ -224,10 +246,19 @@ signed = doc.sign(
 )
 signed.save("signed.pdf")
 
-for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
+signatures = PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes])
+for sig in signatures:
     sig.field, sig.signer, sig.signed_at, sig.reason, sig.location
     sig.intact, sig.valid, sig.trusted, sig.covers_whole_document, sig.timestamped
-    sig.ok        # all of the above that matter: intact, valid, trusted, whole document
+    sig.ok        # this signature: intact, valid and trusted
+
+from dravenpdf import signature_problems
+signature_problems(signatures)         # the document: [] if its signatures vouch for it
+signature_problems(signatures, require_trust=False)   # integrity only
+
+# A file that was encrypted when signed: pass the password to verify it as it is.
+doc = PdfDocument.open("enc-signed.pdf", password=pw)
+doc.verify_signatures([ca_pem_bytes], password=pw)    # the password isn't kept
 ```
 
 - PAdES baseline signatures via pyHanko. These are **advanced** electronic signatures;
@@ -246,6 +277,17 @@ for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
   longer covers the whole document, which `verify_signatures` reports.
 - `trusted` only counts the trust roots you pass (PEM or DER); the operating system's
   certificate store is never used.
+- `ok` judges one signature: intact, valid and trusted. It no longer requires
+  `covers_whole_document` (it did before), so the earlier signature of a file signed
+  twice is ok; coverage stays a separate fact. To judge the document, use
+  `signature_problems()`: at least one signature, every one intact, valid and trusted
+  (unless `require_trust=False`), and at least one covering the whole file, which
+  catches unsigned changes appended after the last signature. CLI and HTTP `verify`
+  use the same rule.
+- `verify_signatures` checks the exact bytes the document was read from. For an
+  encrypted file, pyHanko decrypts while reading (user or owner `password`, passed
+  again because it isn't kept), so signatures made on the encrypted file verify.
+  Writing the opened document still removes them: opening decrypted it.
 
 ### Passwords and encryption
 
@@ -353,8 +395,11 @@ dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--mar
                       [--viewport 1920x1080] [--device-scale-factor 2] [--locale de-DE]
                       [--timezone Europe/Berlin] [--color-scheme dark] [--reduced-motion reduce]
                       [--prefer-css-page-size] [--css-margins] [--tagged] [--outline]
-                      [--wait-for-expression "window.done === true"]
+                      [--wait-for-expression "window.done === true"] [--auth auth.json]
 dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
+                      [--auth auth.json]
+# --auth: RenderAuth JSON ({"cookies", "storage_state", "headers"}), or a file saved by
+# Playwright's context.storage_state(path=...). Its contents never appear in messages.
 dravenpdf merge       a.pdf b.pdf ... -o out.pdf
 dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)
 dravenpdf extract     in.pdf 2-5,8 -o out.pdf
@@ -377,7 +422,8 @@ dravenpdf sign        in.pdf -o out.pdf --key company.p12 [--reason] [--location
                       # key passphrase: env DRAVENPDF_KEY_PASSWORD or prompt
 dravenpdf verify      in.pdf [--trust ca.pem ...] [--integrity-only]
                       # JSON; exit 1 unless signed, intact, trusted by --trust and covering
-                      # the whole file; --integrity-only skips the trust check
+                      # the whole file; --integrity-only skips the trust check;
+                      # encrypted file: password in env DRAVENPDF_PDF_PASSWORD (or --password)
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds

@@ -15,9 +15,12 @@ it blocks before any connection is made.
 
 Credentials: when a render has :class:`~dravenpdf.render.auth.RenderAuth` headers,
 the guard adds them per hop, only when that hop's exact origin (scheme, host, port)
-is configured. Headers are rebuilt for every hop: after the first hop the browser's
-``Cookie`` header is dropped (Playwright then attaches the cookie jar's cookies for
-the new URL), and ``Authorization`` is dropped once a redirect leaves the original
+is configured. Headers are rebuilt for every hop. The first hop carries exactly the
+``Cookie`` header Chromium chose, or an empty one: without it, ``route.fetch`` would
+add every stored cookie for the URL and skip SameSite, sending a page on another site
+cookies Chromium withheld. After the first hop the browser's ``Cookie`` header is
+dropped (Playwright then attaches the stored cookies for the new URL, without
+SameSite), and ``Authorization`` is dropped once a redirect leaves the original
 origin, as browsers do. So one origin's credentials never follow a redirect to another.
 
 If the guard's own fetch fails (connection refused, DNS failure, reset), the request
@@ -259,6 +262,10 @@ class RequestGuard:
             if cross_origin and lowered in _ORIGIN_BOUND_HEADERS:
                 continue
             headers[lowered] = value
+        if first_hop:
+            # Exactly the cookies Chromium chose (SameSite, Secure, ...): with no Cookie
+            # header, route.fetch would add every stored cookie for the URL itself.
+            headers.setdefault("cookie", "")
         if self._auth is not None:
             headers.update(self._auth.headers_for(hop_url))
         return headers

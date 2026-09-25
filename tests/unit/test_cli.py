@@ -134,3 +134,30 @@ def test_bad_json_data(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "JSON object" in result.output
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("s3cret not json", "not a JSON file"),
+        ('{"headers": {"https://a.example/path": {"X": "s3cret"}}}', "origin"),
+        ('{"cookies": [{"name": "sid", "value": "s3cret"}]}', "url or domain"),
+        ('{"origins": [{"origin": "https://a.example", "indexedDB": "s3cret"}]}', "indexedDB"),
+    ],
+)
+def test_render_rejects_bad_auth_file_without_echoing_it(
+    tmp_path: Path, content: str, message: str
+) -> None:
+    (tmp_path / "auth.json").write_text(content)
+    (tmp_path / "in.html").write_text("<p>x</p>")
+
+    result = CliRunner().invoke(
+        app,
+        ["render", str(tmp_path / "in.html"), "-o", str(tmp_path / "out.pdf"),
+         "--auth", str(tmp_path / "auth.json")],
+    )  # fmt: skip
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert "s3cret" not in result.output
+    assert not (tmp_path / "out.pdf").exists()

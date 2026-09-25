@@ -132,6 +132,7 @@ class AsyncRenderer:
         *,
         base_url: str | None = None,
         assets: Mapping[str, bytes] | None = None,
+        auth: RenderAuth | None = None,
         prepare: PageHook | None = None,
     ) -> PdfDocument:
         """Render an HTML string.
@@ -140,6 +141,10 @@ class AsyncRenderer:
         supplies the files the HTML refers to, keyed by relative path
         (``{"css/site.css": b"...", "img/logo.png": b"..."}``); they are served from
         memory, and anything missing is a 404 in the render report.
+
+        ``auth`` is for the remote resources the page loads (images, API calls,
+        frames); see :meth:`from_url` and :class:`RenderAuth` for where each kind of
+        credential takes effect.
         """
         opts = options or RenderOptions()
         if assets is not None:
@@ -150,9 +155,8 @@ class AsyncRenderer:
             async def load_bundle(page: Page) -> None:
                 await page.goto(bundle.document_url, wait_until=opts.wait_until)
 
-            return await self._render(
-                load_bundle, opts, self._new_guard(bundle=bundle), prepare=prepare
-            )
+            guard = self._new_guard(bundle=bundle, auth=auth)
+            return await self._render(load_bundle, opts, guard, prepare=prepare, auth=auth)
         if base_url is not None:
             await self._new_guard().check(base_url)
             html = inject_base_url(html, base_url)
@@ -160,7 +164,9 @@ class AsyncRenderer:
         async def load(page: Page) -> None:
             await page.set_content(html, wait_until=opts.wait_until)
 
-        return await self._render(load, opts, prepare=prepare)
+        return await self._render(
+            load, opts, self._new_guard(auth=auth), prepare=prepare, auth=auth
+        )
 
     async def from_url(
         self,
@@ -175,7 +181,8 @@ class AsyncRenderer:
         ``auth`` logs the render in: its cookies and storage state are put into this
         render's fresh browser context before the first navigation, and its headers
         are sent only to their exact origins (see :class:`RenderAuth`). Nothing
-        carries over to other renders.
+        carries over to other renders. The other ``from_*`` methods take ``auth`` too,
+        for the remote resources their pages load.
         """
         opts = options or RenderOptions()
         guard = self._new_guard(auth=auth)
@@ -193,12 +200,14 @@ class AsyncRenderer:
         path: str | PathLike[str],
         options: RenderOptions | None = None,
         *,
+        auth: RenderAuth | None = None,
         prepare: PageHook | None = None,
     ) -> PdfDocument:
         """Render a local HTML file; relative assets resolve from its folder.
 
         The page may load local files from that folder (and below) only. HTTP(S)
-        requests it makes go through the guard like any other render.
+        requests it makes go through the guard like any other render, with ``auth``
+        (see :meth:`from_html`).
         """
         opts = options or RenderOptions()
         file = await asyncio.to_thread(Path(path).resolve)
@@ -209,9 +218,8 @@ class AsyncRenderer:
         async def load(page: Page) -> None:
             await page.goto(url, wait_until=opts.wait_until)
 
-        return await self._render(
-            load, opts, self._new_guard(file_root=file.parent), prepare=prepare
-        )
+        guard = self._new_guard(file_root=file.parent, auth=auth)
+        return await self._render(load, opts, guard, prepare=prepare, auth=auth)
 
     async def from_template(
         self,
@@ -222,6 +230,7 @@ class AsyncRenderer:
         template_dir: str | PathLike[str] | None = None,
         base_url: str | None = None,
         assets: Mapping[str, bytes] | None = None,
+        auth: RenderAuth | None = None,
         prepare: PageHook | None = None,
     ) -> PdfDocument:
         """Render a Jinja2 template (sandboxed, autoescaped) to PDF.
@@ -230,7 +239,7 @@ class AsyncRenderer:
         assets (CSS, images) resolve from the folder, and the page may load files from
         it only. Without it, ``template`` is the template source. ``base_url`` makes
         relative assets resolve against a web URL instead, and ``assets`` supplies them
-        from memory (see :meth:`from_html`).
+        from memory (see :meth:`from_html`, also for ``auth``).
         """
         if assets is not None and template_dir is not None:
             raise AssetError("pass either template_dir or assets, not both")
@@ -238,7 +247,7 @@ class AsyncRenderer:
         html = await asyncio.to_thread(render_template, template, data, template_dir=template_dir)
         if template_dir is None or base_url is not None or assets is not None:
             return await self.from_html(
-                html, opts, base_url=base_url, assets=assets, prepare=prepare
+                html, opts, base_url=base_url, assets=assets, auth=auth, prepare=prepare
             )
         folder = await asyncio.to_thread(Path(template_dir).resolve)
         folder_url = folder.as_uri() + "/"
@@ -249,7 +258,8 @@ class AsyncRenderer:
             await page.goto(folder_url, wait_until="domcontentloaded")
             await page.set_content(html, wait_until=opts.wait_until)
 
-        return await self._render(load, opts, self._new_guard(file_root=folder), prepare=prepare)
+        guard = self._new_guard(file_root=folder, auth=auth)
+        return await self._render(load, opts, guard, prepare=prepare, auth=auth)
 
     # ------------------------------------------------------------------ internals
 

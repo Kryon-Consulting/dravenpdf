@@ -55,6 +55,10 @@ From the feature review (in the order they were built):
   headers per exact origin) for `from_url`, the sync `Renderer` and
   `POST /v1/render/url`. This also fixed the guard forwarding the first URL's cookies
   to a cross-origin redirect target (see D11).
+- `auth` for every render source (HTML, files, templates, bundles) in the library,
+  CLI (`--auth FILE`) and HTTP API; IndexedDB in storage state (Playwright 1.51+). The
+  guard now passes on exactly Chromium's cookies on the first hop, so SameSite holds
+  (before, `route.fetch` added stored Lax/Strict cookies to cross-site requests).
 
 ## M8 – Encryption, forms, signatures ☑
 Decided in D12: encryption and passwords, form filling and flattening, digital

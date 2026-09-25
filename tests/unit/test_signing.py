@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.server
 import io
+import json
 import threading
 import warnings
 from collections.abc import Callable, Iterator
@@ -20,15 +21,17 @@ from pyhanko.sign.timestamps.dummy_client import DummyTimeStamper
 
 from dravenpdf import (
     PdfDocument,
+    PdfPasswordError,
     SignatureBox,
     SignatureInvalidatedWarning,
     SigningError,
     SigningKey,
+    signature_problems,
 )
 from dravenpdf.document import forms as form_ops
 from dravenpdf.document import signing as sign_ops
 from forms_fixture import build_form
-from signing_fixture import make_p12, make_tsa_material
+from signing_fixture import OWNER, USER, encrypted_then_signed, make_p12, make_tsa_material
 
 PASSWORD = "p12-pass"
 
@@ -126,7 +129,7 @@ def assert_unsigned(data: bytes, *, password: str = "") -> None:
     """A plain file: no signature fields, widgets, permissions or validation data."""
     doc = PdfDocument.from_bytes(data, password=password or None)
     assert not doc.is_signed
-    assert doc.verify_signatures() == []
+    assert doc.verify_signatures(password=password or None) == []
     with pikepdf.open(io.BytesIO(data), password=password) as pdf:
         assert "/AcroForm" not in pdf.Root
         assert "/Perms" not in pdf.Root
@@ -478,3 +481,119 @@ def test_timestamped_signature(key: SigningKey, pem: bytes, tsa_url: str) -> Non
     assert info.valid
     (plain,) = blank().sign(key).verify_signatures([pem])
     assert not plain.timestamped
+
+
+# ---------------------------------------------------------------- document-level result
+
+
+def test_every_signature_of_a_multi_signed_file_is_ok(key: SigningKey, pem: bytes) -> None:
+    other_p12, other_pem = material("Second Signer")
+    twice = blank().sign(key).sign(SigningKey.from_pkcs12(other_p12, PASSWORD))
+
+    first, second = twice.verify_signatures([pem, other_pem])
+
+    assert first.ok  # a later signature doesn't make the earlier one fail
+    assert not first.covers_whole_document  # still reported, as a separate fact
+    assert second.ok
+    assert signature_problems([first, second]) == []
+
+
+def test_signature_problems(key: SigningKey, pem: bytes) -> None:
+    signed = blank().sign(key)
+    (untrusted,) = signed.verify_signatures()
+    (trusted,) = signed.verify_signatures([pem])
+
+    assert signature_problems([]) == ["the file has no signatures"]
+    assert signature_problems([trusted]) == []
+    assert signature_problems([untrusted]) == ["Signature: the signer is not trusted"]
+    assert signature_problems([untrusted], require_trust=False) == []
+    later = PdfDocument.from_bytes(appended_revision(signed.to_bytes()))
+    (changed,) = later.verify_signatures([pem])
+    assert changed.ok
+    assert signature_problems([changed]) == ["the file was changed after its last signature"]
+
+
+def appended_revision(data: bytes) -> bytes:
+    """``data`` plus an unsigned incremental update."""
+    writer = IncrementalPdfFileWriter(io.BytesIO(data))
+    writer.root["/Lang"] = pdf_generic.TextStringObject("de")
+    writer.update_root()
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+# ---------------------------------------------------------------- encrypted signed files
+
+
+@pytest.mark.parametrize("password", [USER, OWNER])
+def test_verify_a_file_signed_while_encrypted(key: SigningKey, pem: bytes, password: str) -> None:
+    doc = PdfDocument.from_bytes(encrypted_then_signed(key), password=password)
+
+    (info,) = doc.verify_signatures([pem], password=password)
+
+    assert doc.was_encrypted
+    assert doc.is_signed
+    assert type(info.field) is str  # not one of pyHanko's decrypted-object proxies
+    assert info.ok
+    assert info.covers_whole_document
+
+
+def test_verify_an_encrypted_file_needs_its_password(key: SigningKey) -> None:
+    doc = PdfDocument.from_bytes(encrypted_then_signed(key), password=USER)
+
+    with pytest.raises(PdfPasswordError, match="needs a password") as missing:
+        doc.verify_signatures()  # the password isn't kept on the document
+    with pytest.raises(PdfPasswordError, match="wrong password") as wrong:
+        doc.verify_signatures(password="guess-pw")
+
+    for info in (missing, wrong):
+        assert info.value.__cause__ is None
+        assert "guess-pw" not in str(info.value)
+
+
+def test_verify_an_encrypted_file_with_several_signatures(key: SigningKey, pem: bytes) -> None:
+    other_p12, other_pem = material("Second Signer")
+    data = encrypted_then_signed(key, SigningKey.from_pkcs12(other_p12, PASSWORD))
+
+    infos = PdfDocument.from_bytes(data, password=USER).verify_signatures(
+        [pem, other_pem], password=USER
+    )
+
+    assert [i.field for i in infos] == ["Sig1", "Sig2"]
+    assert all(i.ok for i in infos)
+    assert signature_problems(infos) == []
+
+
+def test_writing_an_opened_encrypted_signed_file(key: SigningKey, pem: bytes) -> None:
+    doc = PdfDocument.from_bytes(encrypted_then_signed(key), password=USER)
+
+    with pytest.warns(SignatureInvalidatedWarning):
+        written = doc.to_bytes()  # opening decrypted it: writing is a rewrite
+    with pytest.warns(SignatureInvalidatedWarning):
+        rotated = doc.rotate(90)
+
+    assert_unsigned(written)
+    assert rotated.verify_signatures() == []
+    (info,) = doc.verify_signatures([pem], password=USER)  # the original still verifies
+    assert info.ok
+    (copied,) = doc.copy().verify_signatures([pem], password=USER)
+    assert copied.ok
+
+
+def test_cli_verify_encrypted_file(tmp_path: Path, key: SigningKey) -> None:
+    from typer.testing import CliRunner
+
+    from dravenpdf.cli import app
+
+    (tmp_path / "enc.pdf").write_bytes(encrypted_then_signed(key))
+    (tmp_path / "root.pem").write_bytes(material()[1])
+    runner = CliRunner()
+    args = ["verify", str(tmp_path / "enc.pdf"), "--trust", str(tmp_path / "root.pem")]
+
+    checked = runner.invoke(app, args, env={"DRAVENPDF_PDF_PASSWORD": USER})
+    missing = runner.invoke(app, args, env={"DRAVENPDF_PDF_PASSWORD": ""})
+
+    assert checked.exit_code == 0, checked.output
+    assert json.loads(checked.stdout)[0]["ok"] is True
+    assert isinstance(missing.exception, PdfPasswordError)
