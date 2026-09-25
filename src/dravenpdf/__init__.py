@@ -18,7 +18,7 @@ from dravenpdf.errors import (
     RenderTimeoutError,
     TemplateError,
 )
-from dravenpdf.options import HeaderFooter, Margins, RenderOptions
+from dravenpdf.options import HeaderFooter, Margins, RenderOptions, Viewport
 from dravenpdf.render import AsyncRenderer, BrowserPool, Renderer, RequestGuard
 from dravenpdf.render.report import FailedRequest, HttpError, RenderReport
 
@@ -50,5 +50,6 @@ __all__ = [
     "Renderer",
     "RequestGuard",
     "TemplateError",
+    "Viewport",
     "__version__",
 ]

@@ -227,7 +227,10 @@ class AsyncRenderer:
             async with (
                 asyncio.timeout_at(deadline),
                 self.pool.context(
-                    deadline=deadline, service_workers="block", accept_downloads=False
+                    deadline=deadline,
+                    service_workers="block",
+                    accept_downloads=False,
+                    **opts.to_context_kwargs(),
                 ) as ctx,
             ):
                 try:

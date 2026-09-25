@@ -51,6 +51,14 @@ with Renderer() as r:
 | `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot and launching Chromium |
 | `fail_on_resource_errors` | `bool` | `False` | Raise `IncompleteRenderError` if an image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx |
 | `fail_on_page_errors` | `bool` | `False` | Raise `IncompleteRenderError` if the page throws an uncaught JavaScript exception |
+| `viewport` | `Viewport(width, height) \| None` | `None` (1280 × 720) | Window size while the page loads; matters for scripts that measure the window (charts, responsive dashboards), not for CSS-only layouts |
+| `device_scale_factor` | `float` | `1.0` | 1–4; higher gives sharper canvas charts in the PDF |
+| `locale` | `str \| None` | `None` | BCP 47 tag like `"de-DE"`: `navigator.language`, `Intl` formatting, `Accept-Language` |
+| `timezone` | `str \| None` | `None` | IANA zone like `"Europe/Berlin"` for dates the page formats |
+| `color_scheme` | `"light" \| "dark" \| "no-preference" \| None` | `None` | What `prefers-color-scheme` sees |
+| `reduced_motion` | `"reduce" \| "no-preference" \| None` | `None` | What `prefers-reduced-motion` sees; `"reduce"` skips many CSS animations |
+
+Environment options apply to that render's own browser context only.
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
 
@@ -194,7 +202,9 @@ dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--mar
                       [--header h.html] [--footer f.html] [--wait-for "#ready"]
                       [--wait-for-ready-flag] [--media print|screen] [--timeout 30]
                       [--allow-host cdn.example.com ...] [--allow-private] [--skip-blocked]
-                      [--compress]
+                      [--compress] [--fail-on-resource-errors] [--fail-on-page-errors]
+                      [--viewport 1920x1080] [--device-scale-factor 2] [--locale de-DE]
+                      [--timezone Europe/Berlin] [--color-scheme dark] [--reduced-motion reduce]
 dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
 dravenpdf merge       a.pdf b.pdf ... -o out.pdf
 dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)
