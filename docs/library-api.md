@@ -10,12 +10,20 @@ Everything below is importable from the top-level `dravenpdf` package.
 ```python
 from dravenpdf import AsyncRenderer, Renderer, RenderOptions, Margins, HeaderFooter
 
-async with AsyncRenderer(max_concurrency=4, allowed_hosts=None) as r:
+async with AsyncRenderer(
+    max_concurrency=4,            # renders at once
+    max_queue=16,                 # waiting renders before PoolExhaustedError
+    recycle_after=500,            # restart Chromium after N renders
+    allowed_hosts=None,           # e.g. ["cdn.example.com", "*.example.org"]
+    allow_private_network=False,  # True only for trusted input
+    on_blocked="fail",            # or "skip": render without blocked resources
+    executable_path=None,         # default: $DRAVENPDF_CHROMIUM_PATH or Playwright's
+) as r:
     doc = await r.from_html("<h1>Hello</h1>")
     doc = await r.from_html(html, RenderOptions(paper="A4", landscape=True),
                             base_url="https://assets.example.com/")
     doc = await r.from_url("https://example.com", RenderOptions(wait_for_selector="#ready"))
-    doc = await r.from_file("report.html")          # relative assets resolved from the file's folder
+    doc = await r.from_file("report.html")          # may load files from its own folder only
     doc = await r.from_template("invoice.html", {"items": items},
                                 template_dir="templates/")
 
@@ -41,6 +49,9 @@ with Renderer() as r:
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
 | `timeout_ms` | `int` | `30000` | For the whole render |
+
+`from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
+`from_template` arrives in M4.
 
 ## Working with PDFs
 

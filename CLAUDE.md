@@ -18,8 +18,8 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-M1 (project skeleton) is done: packaging, `errors.py`, `options.py`, tooling
-and CI. Next is M2 (rendering core). The build order is in `docs/roadmap.md`.
+M1 (skeleton) and M2 (rendering core: `render/`, minimal `PdfDocument`) are done.
+Next is M3 (PdfDocument page operations). The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -59,6 +59,9 @@ Full reasoning is in `docs/decisions.md`.
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the
   request guard in `render/guards.py` (SSRF protection). Never bypass it.
+- Don't replace the guard's `route.fetch(max_redirects=0)` loop with
+  `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
+  could redirect Chromium to an internal one unchecked (tests cover this).
 
 ## Commands
 
@@ -69,6 +72,8 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run pytest -m "not browser"       # fast, no Chromium
 uv run pytest                        # full suite
+# If the installed Chromium doesn't match Playwright's version (e.g. a preinstalled
+# one), point at it: DRAVENPDF_CHROMIUM_PATH=/path/to/chrome uv run pytest
 make check                           # lint + typecheck + unit tests
 # once the CLI (M5) and server (M6) exist:
 uv run dravenpdf render in.html -o out.pdf
