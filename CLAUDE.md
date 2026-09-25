@@ -75,6 +75,9 @@ Full reasoning is in `docs/decisions.md`.
   render deadline can't leak a half-created browser or context.
 - Build many-part outputs lazily (`PdfDocument.iter_split`) and don't keep earlier
   parts referenced; note that `enumerate()` holds its previous item (see the split route).
+- Every guard route handler must answer the browser on every path (fulfill, continue
+  or abort), including when its own fetch fails; an unanswered route hangs the render.
+  New kinds of browser traffic (like WebSockets) need their own guard route.
 - Don't replace the guard's `route.fetch(max_redirects=0)` loop with
   `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
   could redirect Chromium to an internal one unchecked (tests cover this).

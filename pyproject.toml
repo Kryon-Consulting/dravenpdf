@@ -44,6 +44,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "deptry>=0.25.1",
+    "websockets>=12",
 ]
 
 [build-system]

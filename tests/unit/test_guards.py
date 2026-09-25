@@ -160,3 +160,29 @@ async def test_file_root_blocks_symlink_escape(tmp_path: object) -> None:
 
     with pytest.raises(BlockedRequestError, match="outside"):
         await guard(file_root=base / "site").check((base / "site" / "link.txt").as_uri())
+
+
+@pytest.mark.parametrize(
+    ("url", "blocked"),
+    [
+        ("wss://public.example/socket", False),
+        ("ws://public.example/socket", False),
+        ("ws://127.0.0.1:8080/", True),
+        ("wss://internal.example/", True),
+        ("ws://[::1]/", True),
+    ],
+)
+async def test_websockets_follow_the_http_rules(url: str, blocked: bool) -> None:
+    if blocked:
+        with pytest.raises(BlockedRequestError, match="non-public"):
+            await guard().check(url)
+    else:
+        await guard().check(url)
+
+
+async def test_websocket_allowlist() -> None:
+    g = guard(allowed_hosts=["localhost"])
+
+    await g.check("ws://localhost:9000/live")
+    with pytest.raises(BlockedRequestError, match="allowlist"):
+        await g.check("wss://public.example/")

@@ -118,7 +118,11 @@ DravenPdfError
   inside `file_root`, which `from_file` sets to the rendered file's folder.
   Playwright does not call route handlers for redirect hops, so the guard fetches
   HTTP(S) requests itself (`route.fetch(max_redirects=0)`), checks each redirect
-  target, and fulfills the browser with the final response. Blocked requests are
+  target, and fulfills the browser with the final response. If that fetch fails, the
+  request is aborted as a network error (never left unanswered, which would hold the
+  render until its deadline). WebSockets are routed separately
+  (`context.route_web_socket`) and checked with the same host rules; blocked ones are
+  closed before connecting. Blocked requests are
   aborted and recorded; with `on_blocked="fail"` (default) the render then raises
   `BlockedRequestError`, with `"skip"` it renders without them.
   Known limit: DNS is resolved separately for the check and the connection
