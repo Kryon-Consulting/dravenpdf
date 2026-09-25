@@ -59,35 +59,50 @@ with Renderer() as r:
 from dravenpdf import PdfDocument
 
 doc = PdfDocument.open("in.pdf")                    # or PdfDocument.from_bytes(b)
-doc.page_count
-doc.metadata                                        # dict
+doc.page_count                                      # also len(doc)
+doc.metadata                                        # {"title": ..., "author": ...} – set fields only
+doc.page_size(0)                                    # (width, height) in points, rotation applied
 
-merged = PdfDocument.merge([doc_a, doc_b, pdf_bytes])
+merged = PdfDocument.merge([doc_a, doc_b, pdf_bytes])   # metadata from the first
 parts  = doc.split(every=1)                         # list[PdfDocument]
 parts  = doc.split(ranges=["1-3", "4-"])
-doc.extract("2-5")                                  # new PdfDocument
+doc.extract("2-5,8")                                # new PdfDocument
+doc.insert(other_doc_or_bytes, at=1)                # before page index 1; at=page_count appends
 
-(doc.rotate(90, pages=[0])
-    .delete(pages=[3])
-    .reorder([2, 0, 1])
-    .stamp_text("CONFIDENTIAL", opacity=0.15, angle=45)
-    .stamp_image(logo_png, position="top-right", pages="all")
-    .set_metadata(title="Q3 Report", author="Kryon"))
+(doc.rotate(90, pages=[0])                          # clockwise; all pages if pages is omitted
+    .delete([3, -1])                                # 0-based; negative counts from the end
+    .reorder([2, 0, 1])                             # must name every page exactly once
+    .set_metadata(title="Q3 Report", author=""))    # None = leave, "" = remove
+doc.copy()
 
-await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", under=False)
-
-doc.to_images(dpi=150, fmt="png")                   # list[bytes]
-doc.extract_text()                                  # list[str], one per page
-doc.to_bytes(compress=True)
+doc.to_bytes()
+doc.to_bytes(compress=True)                         # + object streams, max recompression
 doc.save("out.pdf", compress=True)
-
-PdfDocument.from_images([png1, jpg2], paper="A4")
 ```
 
-`PdfDocument` methods return a new `PdfDocument` (or `self` after an in-place
-change, as documented per method) so calls can be chained.
-Page numbers in Python arguments are **0-based**. Range strings (`"1-3"`) are
-**1-based**, matching how people write page ranges.
+**Every method returns a new `PdfDocument` and leaves the original unchanged**, so
+calls chain and documents can be shared. A single `PdfDocument` is not safe to use
+from several threads at once. Bad arguments (unknown page, bad range, deleting
+every page) raise `PdfOperationError`; unreadable or password-protected input
+raises `InvalidPdfError`.
+
+Page numbers in Python arguments are **0-based**. Range strings (`"1-3,5,8-"`) are
+**1-based**, matching how people write page ranges; `"8-"` means page 8 to the end.
+
+Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
+`insert`) keep document info (title, author, ...) but not bookmarks. `rotate`,
+`delete`, `set_metadata` and `copy` keep everything.
+
+### Coming in M4
+
+```python
+doc.stamp_text("CONFIDENTIAL", opacity=0.15, angle=45)
+doc.stamp_image(logo_png, position="top-right", pages="all")
+await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", under=False)
+doc.to_images(dpi=150, fmt="png")                   # list[bytes]
+doc.extract_text()                                  # list[str], one per page
+PdfDocument.from_images([png1, jpg2], paper="A4")
+```
 
 ## Errors
 

@@ -8,7 +8,8 @@ web fonts, SVG and JavaScript all work. You can then merge, split, rotate, stamp
 and compress the PDFs, convert between PDFs and images, and extract text.
 
 > **Status:** early development. The design is complete (see [`docs/`](docs/));
-> HTML/URL/file rendering works; PDF editing features are next.
+> HTML/URL/file rendering and page operations (merge, split, rotate, ...) work;
+> stamps, images, text extraction and templates are next.
 > See the [roadmap](docs/roadmap.md).
 
 ## Features

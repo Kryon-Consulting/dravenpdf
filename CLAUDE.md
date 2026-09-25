@@ -18,8 +18,9 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-M1 (skeleton) and M2 (rendering core: `render/`, minimal `PdfDocument`) are done.
-Next is M3 (PdfDocument page operations). The build order is in `docs/roadmap.md`.
+M1 (skeleton), M2 (rendering core: `render/`) and M3 (`PdfDocument` page operations:
+`document/pdf.py`, `document/pages.py`) are done. Next is M4 (stamps, images, text,
+templates). The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -55,6 +56,9 @@ Full reasoning is in `docs/decisions.md`.
   wrapper. Put new rendering logic in the async code, not in the sync wrapper.
 - Functions in `document/` take and return `bytes` or `PdfDocument`, never file
   paths. Only `PdfDocument.open()` / `.save()` and the CLI touch the filesystem.
+- `PdfDocument` methods never modify `self`; they return a new document. Anything
+  that copies pages between pikepdf PDFs must end with `pages._detach()` (see
+  `docs/architecture.md`), or the result breaks once its source is garbage-collected.
 - Raise the exceptions from `dravenpdf.errors`, not bare `Exception`s. The
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the

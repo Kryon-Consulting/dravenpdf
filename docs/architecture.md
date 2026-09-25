@@ -123,7 +123,10 @@ DravenPdfError
 
 ### `document/`
 All functions work on bytes in memory. `PdfDocument` wraps a `pikepdf.Pdf` and
-exposes chainable methods that each return a `PdfDocument`.
+exposes chainable methods that each return a **new** `PdfDocument` (inputs are never
+modified). pikepdf copies pages from another PDF lazily and needs the source to stay
+open until the copy is saved, so operations that assemble pages from other PDFs
+save-and-reopen their result (`pages._detach`) before returning it.
 - **`pages.py`**: `merge`, `split(every=n | ranges=[...])`, `extract`, `rotate`,
   `delete`, `reorder`, `insert`.
 - **`stamp.py`**: overlays or underlays a one-page PDF on selected pages. Text and

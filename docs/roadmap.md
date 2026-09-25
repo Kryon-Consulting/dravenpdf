@@ -16,8 +16,9 @@ waits, header/footer, sync `Renderer`, integration tests.
 Also a minimal `PdfDocument` (`from_bytes`, `open`, `page_count`, `to_bytes`, `save`)
 so renders return the final type; M3 fills in the rest.
 
-## M3 – PdfDocument and page operations ☐
+## M3 – PdfDocument and page operations ☑
 Open/save/compress/metadata, merge, split, extract, rotate, delete, reorder, unit tests.
+Also `insert`, `copy`, `page_size`, and 1-based range strings with open ends (`"8-"`).
 
 ## M4 – Stamps, images, text, templates ☐
 Text/image/HTML stamps, images ↔ PDF, text extraction, Jinja2 `from_template`.
