@@ -40,6 +40,8 @@ tests/visual/__diff__/
 # Generated PDFs and images from local runs (test fixtures under tests/fixtures are committed)
 /out/
 /output/
+/outputs/
+/images/
 *.pdf
 !tests/fixtures/**/*.pdf
 !examples/**/*.pdf
