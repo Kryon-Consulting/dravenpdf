@@ -41,7 +41,8 @@ development only). Keys are compared in constant time. `/healthz`, `/readyz`,
 
 - `options` is `RenderOptions` (see [library-api.md](library-api.md#renderoptions)):
   paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
-  capped at `DRAVENPDF_RENDER_TIMEOUT_MS`.
+  capped at `DRAVENPDF_RENDER_TIMEOUT_MS`. It covers the whole request, including
+  time spent waiting for a free browser.
 - `template` is Jinja2 **source** (sandboxed, autoescaped). The service does not read
   template files from its own disk.
 - `post` is optional work on the result:
@@ -86,6 +87,10 @@ curl -X POST http://localhost:8000/v1/pdf/merge -H "X-API-Key: $KEY" \
 |---|---|---|
 | `POST /v1/convert/images-to-pdf` | `files` (PNG/JPEG/...), `paper`?, `landscape`?, `margin`? | `application/pdf` |
 | `POST /v1/convert/pdf-to-images` | `file`, `dpi`? (10–600), `format`? (`png`/`jpeg`), `pages`? | `application/zip` (`page-1.png`, ...) |
+
+A page larger than `DRAVENPDF_MAX_IMAGE_MEGAPIXELS` at the requested `dpi` is refused
+before it is rendered. ZIP responses (`split`, `pdf-to-images`) stop at
+`DRAVENPDF_MAX_OUTPUT_MB` of content. Either limit returns 422 `limit_exceeded`.
 | `POST /v1/convert/text` | `file` | `application/json`: `{"pages": [str, ...]}` |
 
 ### Operations
@@ -111,11 +116,12 @@ lives in `src/dravenpdf/server/errors.py`.
 | 401 | `unauthorized` | Missing or wrong API key |
 | 413 | `payload_too_large` | Body larger than `DRAVENPDF_MAX_BODY_MB` (with or without Content-Length) |
 | 415 | `unsupported_media_type` | An upload that should be a PDF isn't one |
+| 422 | `limit_exceeded` | The result would pass an output limit (image pixels, ZIP size) |
 | 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |
-| 504 | `render_timeout` | Render exceeded `timeout_ms` |
+| 504 | `render_timeout` | Render exceeded `timeout_ms` (time spent queued for a browser counts) |
 | 500 | `internal_error` | Anything else; the message has the request ID, details are only in the log |
 
 ## Configuration (environment variables)
@@ -128,6 +134,8 @@ lives in `src/dravenpdf/server/errors.py`.
 | `DRAVENPDF_MAX_QUEUE` | `16` | Renders waiting before a 503 |
 | `DRAVENPDF_RENDER_TIMEOUT_MS` | `30000` | Upper limit; a request's `timeout_ms` is capped at it |
 | `DRAVENPDF_MAX_BODY_MB` | `25` | Request and upload size limit |
+| `DRAVENPDF_MAX_OUTPUT_MB` | `100` | Content limit for ZIP responses and for all images from `pdf-to-images` |
+| `DRAVENPDF_MAX_IMAGE_MEGAPIXELS` | `40` | Largest page `pdf-to-images` renders (A4 at 600 dpi is 35) |
 | `DRAVENPDF_ALLOWED_HOSTS` | – | Comma-separated host allowlist for URLs and sub-resources (`*.example.com` allowed). Unset = any public host |
 | `DRAVENPDF_BROWSER_RECYCLE_AFTER` | `500` | Restart Chromium after N renders |
 | `DRAVENPDF_LOG_LEVEL` | `INFO` | |

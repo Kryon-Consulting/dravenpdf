@@ -193,30 +193,38 @@ class AsyncRenderer:
         self, load: Loader, opts: RenderOptions, guard: RequestGuard | None = None
     ) -> PdfDocument:
         guard = guard or self._new_guard()
-        async with self.pool.context(service_workers="block", accept_downloads=False) as ctx:
-            await guard.install(ctx)
-            page = await ctx.new_page()
-            page.set_default_timeout(opts.timeout_ms)
-            try:
-                async with asyncio.timeout(opts.timeout_ms / 1000):
-                    await page.emulate_media(media=opts.media)
-                    await load(page)
-                    await wait_until_ready(page, opts)
-                    if self._on_blocked == "fail":
-                        guard.raise_if_blocked()
-                    data = await page.pdf(**opts.to_pdf_kwargs())
-            except (TimeoutError, PlaywrightTimeoutError) as exc:
-                raise RenderTimeoutError(
-                    f"render did not finish within {opts.timeout_ms} ms",
-                    timeout_ms=opts.timeout_ms,
-                ) from exc
-            except PlaywrightError as exc:
-                if guard.blocked and self._on_blocked == "fail":
-                    try:
-                        guard.raise_if_blocked()
-                    except BlockedRequestError as blocked:
-                        raise blocked from exc
-                raise RenderError(f"render failed: {exc.message}") from exc
+        # One deadline for the whole render: waiting for a browser slot counts too.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + opts.timeout_ms / 1000
+        try:
+            async with self.pool.context(
+                deadline=deadline, service_workers="block", accept_downloads=False
+            ) as ctx:
+                await guard.install(ctx)
+                page = await ctx.new_page()
+                page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await page.emulate_media(media=opts.media)
+                        await load(page)
+                        await wait_until_ready(page, opts)
+                        if self._on_blocked == "fail":
+                            guard.raise_if_blocked()
+                        data = await page.pdf(**opts.to_pdf_kwargs())
+                except PlaywrightError as exc:
+                    if isinstance(exc, PlaywrightTimeoutError):
+                        raise
+                    if guard.blocked and self._on_blocked == "fail":
+                        try:
+                            guard.raise_if_blocked()
+                        except BlockedRequestError as blocked:
+                            raise blocked from exc
+                    raise RenderError(f"render failed: {exc.message}") from exc
+        except (TimeoutError, PlaywrightTimeoutError) as exc:
+            raise RenderTimeoutError(
+                f"render did not finish within {opts.timeout_ms} ms",
+                timeout_ms=opts.timeout_ms,
+            ) from exc
         if guard.blocked:
             logger.info("rendered without %d blocked request(s)", len(guard.blocked))
         return await asyncio.to_thread(PdfDocument.from_bytes, data)

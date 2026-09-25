@@ -10,7 +10,7 @@ from typing import Any, Literal
 import img2pdf
 
 from dravenpdf.document._pdfium import open_pdf
-from dravenpdf.errors import PdfOperationError
+from dravenpdf.errors import LimitExceededError, PdfOperationError
 from dravenpdf.options import PaperSize
 
 ImageFormat = Literal["png", "jpeg"]
@@ -81,15 +81,24 @@ def pdf_to_images(
     fmt: ImageFormat = "png",
     pages: Iterable[int] | None = None,
     jpeg_quality: int = 85,
+    max_pixels: int | None = None,
+    max_total_bytes: int | None = None,
 ) -> list[bytes]:
-    """Render pages to PNG or JPEG. ``pages`` are 0-based indices (default: all)."""
+    """Render pages to PNG or JPEG. ``pages`` are 0-based indices (default: all).
+
+    ``max_pixels`` caps one page's width x height at ``dpi``, checked before the page
+    is rendered. ``max_total_bytes`` caps the encoded images together; rendering stops
+    as soon as it is passed. Either raises :class:`LimitExceededError`.
+    """
     if not MIN_DPI <= dpi <= MAX_DPI:
         raise PdfOperationError(f"dpi must be between {MIN_DPI} and {MAX_DPI}")
     if fmt not in ("png", "jpeg"):
         raise PdfOperationError("fmt must be 'png' or 'jpeg'")
     if not 1 <= jpeg_quality <= 100:
         raise PdfOperationError("jpeg_quality must be between 1 and 100")
-    results = []
+    scale = dpi / 72
+    results: list[bytes] = []
+    total = 0
     with open_pdf(pdf) as doc:
         count = len(doc)
         indices = range(count) if pages is None else list(pages)
@@ -98,7 +107,15 @@ def pdf_to_images(
                 raise PdfOperationError(f"page index {index} is out of range for {count} pages")
             page = doc[index % count]
             try:
-                bitmap = page.render(scale=dpi / 72)
+                if max_pixels is not None:
+                    width, height = page.get_size()
+                    pixels = round(width * scale) * round(height * scale)
+                    if pixels > max_pixels:
+                        raise LimitExceededError(
+                            f"page {index % count + 1} would be {pixels:,} pixels at {dpi} dpi; "
+                            f"the limit is {max_pixels:,} (lower the dpi)"
+                        )
+                bitmap = page.render(scale=scale)
                 image = bitmap.to_pil()
             finally:
                 page.close()
@@ -108,4 +125,10 @@ def pdf_to_images(
             else:
                 image.convert("RGB").save(buffer, format="JPEG", quality=jpeg_quality)
             results.append(buffer.getvalue())
+            total += len(results[-1])
+            if max_total_bytes is not None and total > max_total_bytes:
+                raise LimitExceededError(
+                    f"the images are larger than the {max_total_bytes:,}-byte limit "
+                    "(lower the dpi, use jpeg, or ask for fewer pages)"
+                )
     return results

@@ -62,6 +62,12 @@ class PdfOperationError(DravenPdfError):
     code = "invalid_request"
 
 
+class LimitExceededError(PdfOperationError):
+    """An operation's output would pass a size limit, e.g. too many pixels."""
+
+    code = "limit_exceeded"
+
+
 class PoolExhaustedError(DravenPdfError):
     """Too many renders are already waiting for a browser slot."""
 
@@ -72,6 +78,7 @@ __all__ = [
     "BlockedRequestError",
     "DravenPdfError",
     "InvalidPdfError",
+    "LimitExceededError",
     "PdfOperationError",
     "PoolExhaustedError",
     "RenderError",

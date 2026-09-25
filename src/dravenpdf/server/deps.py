@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import secrets
 import zipfile
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Iterable, Iterator
+from tempfile import SpooledTemporaryFile
 from typing import Annotated, Any, TypeVar
 
 from fastapi import Header, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
+from dravenpdf.errors import LimitExceededError
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.renderer import AsyncRenderer
 from dravenpdf.server.config import Settings
@@ -22,6 +23,10 @@ from dravenpdf.server.metrics import Metrics
 from dravenpdf.server.schemas import PostProcess
 
 T = TypeVar("T")
+
+# ZIPs up to this size stay in memory; larger ones go to a temporary file.
+_ZIP_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+_ZIP_CHUNK_BYTES = 64 * 1024
 
 # OpenAPI descriptions of binary responses.
 PDF_RESPONSE: dict[int | str, dict[str, Any]] = {
@@ -106,13 +111,56 @@ async def pdf_response(
     )
 
 
-def zip_response(files: Sequence[tuple[str, bytes]], filename: str) -> Response:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, data in files:
-            archive.writestr(name, data)
-    return Response(
-        content=buffer.getvalue(),
+async def zip_response(
+    files: Iterable[tuple[str, bytes]], filename: str, *, max_bytes: int, compress: bool = True
+) -> StreamingResponse:
+    """A ZIP of ``files``, built in a worker thread and streamed from a spooled file.
+
+    ``files`` is consumed in the worker thread, so it may be a generator that does
+    the work lazily. Past ``max_bytes`` of (uncompressed) content it raises
+    :class:`LimitExceededError`. Pass ``compress=False`` for already-compressed data.
+    """
+    spool = await asyncio.to_thread(_write_zip, files, max_bytes, compress)
+    size = spool.tell()
+    spool.seek(0)
+    return StreamingResponse(
+        _read_chunks(spool),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(size),
+        },
     )
+
+
+def _write_zip(
+    files: Iterable[tuple[str, bytes]], max_bytes: int, compress: bool
+) -> SpooledTemporaryFile[bytes]:
+    # Not a with block: the response closes it after streaming (_read_chunks).
+    spool: SpooledTemporaryFile[bytes] = SpooledTemporaryFile(  # noqa: SIM115
+        max_size=_ZIP_SPOOL_MEMORY_BYTES
+    )
+    try:
+        method = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+        total = 0
+        with zipfile.ZipFile(spool, "w", method) as archive:
+            for name, data in files:
+                total += len(data)
+                if total > max_bytes:
+                    raise LimitExceededError(
+                        f"the result is larger than the {max_bytes:,}-byte output limit"
+                    )
+                archive.writestr(name, data)
+    except BaseException:
+        spool.close()
+        raise
+    return spool
+
+
+def _read_chunks(spool: SpooledTemporaryFile[bytes]) -> Iterator[bytes]:
+    # A sync iterator: Starlette reads it in a worker thread.
+    try:
+        while chunk := spool.read(_ZIP_CHUNK_BYTES):
+            yield chunk
+    finally:
+        spool.close()

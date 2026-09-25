@@ -48,7 +48,7 @@ with Renderer() as r:
 | `wait_until` | `"load" \| "domcontentloaded" \| "networkidle"` | `"networkidle"` | |
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
-| `timeout_ms` | `int` | `30000` | For the whole render |
+| `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot |
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
 
@@ -119,6 +119,7 @@ await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
 PdfDocument.from_images([png, jpg])                     # page = image size (96 dpi default)
 PdfDocument.from_images([png, jpg], paper="A4", landscape=False, margin=36)  # fit on paper
 doc.to_images(dpi=150, fmt="png", pages=None)           # list[bytes]; fmt "png" | "jpeg"
+doc.to_images(dpi=300, max_pixels=40_000_000, max_total_bytes=100 * 2**20)  # LimitExceededError past either
 doc.extract_text()                                      # list[str], one per page; no OCR
 ```
 

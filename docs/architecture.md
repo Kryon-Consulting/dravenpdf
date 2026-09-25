@@ -89,6 +89,7 @@ DravenPdfError
 ├── TemplateError               # Jinja2 template not found / invalid / failed
 ├── InvalidPdfError             # input bytes are not a readable PDF
 ├── PdfOperationError           # e.g. page index out of range
+│   └── LimitExceededError      # output would pass a size limit (server → 422)
 └── PoolExhaustedError          # too many renders waiting (server → 503)
 ```
 
@@ -100,7 +101,8 @@ DravenPdfError
   are waiting. It relaunches Chromium if it disconnects, and can recycle the
   browser after N renders to limit memory growth.
 - **`renderer.py` – `AsyncRenderer`**: `from_html`, `from_url`, `from_file`,
-  `from_template`. Each call: take a pool slot → create a new context →
+  `from_template`. One deadline (`timeout_ms`) covers the whole call, including the
+  wait for a slot. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
 - **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,

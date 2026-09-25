@@ -281,6 +281,24 @@ async def test_queue_full_raises_pool_exhausted() -> None:
         assert (await first).page_count == 1
 
 
+async def test_timeout_counts_time_waiting_for_a_slot() -> None:
+    slow = RenderOptions(wait_for_ready_flag=True, timeout_ms=5000)
+    html = "<script>setTimeout(() => window.__DRAVENPDF_READY__ = true, 1500)</script>"
+
+    async with AsyncRenderer(max_concurrency=1) as r:
+        first = asyncio.create_task(r.from_html(html, slow))
+        while r.pool.active == 0:
+            await asyncio.sleep(0.01)
+
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(RenderTimeoutError):
+            await r.from_html("<p>queued</p>", RenderOptions(timeout_ms=300))
+        assert asyncio.get_running_loop().time() - started < 1.0
+        assert r.pool.waiting == 0
+        assert (await first).page_count == 1
+        assert (await r.from_html("<p>after</p>")).page_count == 1
+
+
 async def test_browser_is_recycled() -> None:
     async with AsyncRenderer(recycle_after=2) as r:
         for i in range(5):
