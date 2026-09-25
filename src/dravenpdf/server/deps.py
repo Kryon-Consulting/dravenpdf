@@ -7,7 +7,7 @@ import secrets
 import zipfile
 from collections.abc import Awaitable, Iterable, Iterator
 from tempfile import SpooledTemporaryFile
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any
 
 from fastapi import Header, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -21,8 +21,6 @@ from dravenpdf.server.config import Settings
 from dravenpdf.server.errors import ApiError
 from dravenpdf.server.metrics import Metrics
 from dravenpdf.server.schemas import PostProcess
-
-T = TypeVar("T")
 
 # ZIPs up to this size stay in memory; larger ones go to a temporary file.
 _ZIP_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
@@ -71,7 +69,7 @@ def clamp_timeout(options: RenderOptions, settings: Settings) -> RenderOptions:
     return options.model_copy(update={"timeout_ms": settings.render_timeout_ms})
 
 
-async def timed(request: Request, source: str, work: Awaitable[T]) -> T:
+async def timed[T](request: Request, source: str, work: Awaitable[T]) -> T:
     with metrics_of(request).render_seconds.labels(source).time():
         return await work
 

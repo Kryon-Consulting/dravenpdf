@@ -3,17 +3,18 @@ name = "dravenpdf"
 version = "0.1.0.dev0"
 description = "HTML to PDF conversion and PDF tools for Python, powered by headless Chromium, with an optional HTTP service."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "Kryon Consulting" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 dependencies = [
+    "mitmproxy>=12,<13",
+    "cryptography>=44",
     "playwright>=1.51",  # 1.51: IndexedDB in storage state
     "pikepdf>=9.0",
     "pypdfium2>=4.30",
@@ -61,7 +62,7 @@ packages = ["src/dravenpdf"]
 # ---------------------------------------------------------------- ruff
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.format]
@@ -94,7 +95,7 @@ DEP003 = ["starlette"]         # FastAPI's own dependency; it pins the version
 
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["src"]

@@ -14,6 +14,7 @@ from playwright.async_api import Browser, BrowserContext, Playwright, async_play
 from playwright.async_api import Error as PlaywrightError
 
 from dravenpdf.errors import PoolExhaustedError, RenderError
+from dravenpdf.render._proxy_ca import ProxyCA
 
 logger = logging.getLogger("dravenpdf.render.pool")
 
@@ -73,6 +74,7 @@ class BrowserPool:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._launching: asyncio.Task[_Slot] | None = None
         self._playwright: Playwright | None = None
+        self._proxy_ca: ProxyCA | None = None
         self._current: _Slot | None = None
         self._retired: list[_Slot] = []
         self._closing: set[asyncio.Task[None]] = set()
@@ -101,8 +103,9 @@ class BrowserPool:
     async def start(self) -> None:
         if self._playwright is not None:
             return
-        self._playwright = await async_playwright().start()
         try:
+            self._proxy_ca = ProxyCA.create()
+            self._playwright = await async_playwright().start()
             await self._ensure_browser()
         except BaseException:
             await self.close()
@@ -125,6 +128,9 @@ class BrowserPool:
             with suppress(PlaywrightError):
                 await self._playwright.stop()
             self._playwright = None
+        if self._proxy_ca is not None:
+            self._proxy_ca.close()
+            self._proxy_ca = None
 
     async def __aenter__(self) -> BrowserPool:
         await self.start()
@@ -173,9 +179,19 @@ class BrowserPool:
         return self._current
 
     async def _launch_browser(self, playwright: Playwright) -> Browser:
+        assert self._proxy_ca is not None
+        prefix = "--ignore-certificate-errors-spki-list="
+        hashes = [self._proxy_ca.spki_hash]
+        args = []
+        for arg in self._launch_args:
+            if arg.startswith(prefix):
+                hashes.append(arg[len(prefix) :])
+            else:
+                args.append(arg)
+        args.append(prefix + ",".join(hashes))
         return await playwright.chromium.launch(
             executable_path=self._executable_path,
-            args=self._launch_args,
+            args=args,
         )
 
     def _launch_done(self, task: asyncio.Task[_Slot]) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
@@ -29,8 +29,6 @@ from dravenpdf.server.schemas import (
     RenderUrlRequest,
     safe_filename,
 )
-
-M = TypeVar("M", bound=BaseModel)
 
 router = APIRouter(prefix="/v1/render", tags=["render"], dependencies=[Depends(require_api_key)])
 
@@ -70,7 +68,7 @@ async def render_template(body: RenderTemplateRequest, request: Request) -> Resp
     return await pdf_response(doc, body.filename, body.post)
 
 
-def _json_field(model: type[M], raw: str | None, field: str) -> M | None:
+def _json_field[M: BaseModel](model: type[M], raw: str | None, field: str) -> M | None:
     if raw is None or not raw.strip():
         return None
     try:
