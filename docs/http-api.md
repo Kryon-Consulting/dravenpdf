@@ -106,6 +106,11 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 | `POST /v1/pdf/stamp` | `file`, exactly one of `text` / `image` (file) / `html`; `opacity`?, `angle`?, `font_size`?, `color`?, `width`?, `position`?, `margin`?, `under`?, `pages`? | `application/pdf` |
 | `POST /v1/pdf/metadata` | `file`, `title`?, `author`?, `subject`?, `keywords`? (`""` removes) | `application/pdf` |
 | `POST /v1/pdf/compress` | `file` | `application/pdf` |
+| `POST /v1/pdf/encrypt` | `file`, `user_password`?, `owner_password`? (random if omitted), `password`? (if the input is already protected), `allow_print`/`allow_copy`/`allow_modify`/`allow_annotate`/`allow_forms`? | `application/pdf` (AES-256) |
+| `POST /v1/pdf/decrypt` | `file`, `password` | `application/pdf` |
+
+Other PDF endpoints refuse password-protected uploads with 422 `pdf_password`;
+decrypt them first. Passwords never appear in responses or logs.
 
 ```bash
 curl -X POST http://localhost:8000/v1/pdf/merge -H "X-API-Key: $KEY" \
@@ -154,7 +159,8 @@ lives in `src/dravenpdf/server/errors.py`.
 | 413 | `payload_too_large` | Body larger than `DRAVENPDF_MAX_BODY_MB` (with or without Content-Length) |
 | 415 | `unsupported_media_type` | An upload that should be a PDF isn't one |
 | 422 | `limit_exceeded` | The result would pass an output limit (image pixels, ZIP size) |
-| 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
+| 422 | `invalid_pdf` | Looks like a PDF but can't be read |
+| 422 | `pdf_password` | The PDF is password-protected and no (or the wrong) password was given |
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
 | 422 | `render_incomplete` | A strict render (`fail_on_resource_errors` / `fail_on_page_errors`) found problems; the message lists them |

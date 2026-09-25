@@ -184,6 +184,31 @@ structure of a `tagged` PDF won't match the new pages. `rotate`, `delete`,
 `set_metadata` and `copy` keep everything. Render with `tagged`/`outline` last if the
 result must stay accessible.
 
+### Passwords and encryption
+
+```python
+doc = PdfDocument.open("locked.pdf", password="user-or-owner-password")   # decrypts
+doc.was_encrypted                                   # True if the file was protected
+
+protected = doc.encrypt(
+    user_password="needed-to-open",   # "" = anyone can open it
+    owner_password="full-access",     # omitted = random, so restrictions can't be lifted
+    allow_print=True, allow_copy=False, allow_modify=False,
+    allow_annotate=True, allow_forms=True,
+)
+protected.is_encrypted                # True: to_bytes()/save() write AES-256 encrypted
+protected.rotate(90).is_encrypted     # True: operations keep pending encryption
+protected.decrypt()                   # a copy written without encryption
+```
+
+- Opening with a password **decrypts**: the document and its derived documents are
+  written unencrypted unless you call `encrypt()` again.
+- `merge` takes pending encryption from the first document, like metadata.
+- The `allow_*` permissions are honoured by well-behaved viewers only; anyone who can
+  open the file can technically copy or print it. Use a user password to protect content.
+- A missing or wrong password raises `PdfPasswordError` (a subclass of
+  `InvalidPdfError`); passwords never appear in error messages.
+
 ### Stamps and watermarks
 
 ```python
@@ -277,6 +302,10 @@ dravenpdf stamp       in.pdf -o out.pdf (--text DRAFT | --image logo.png | --htm
 dravenpdf metadata    in.pdf                          # show info as JSON
 dravenpdf metadata    in.pdf --title "Q3" -o out.pdf  # write a changed copy
 dravenpdf compress    in.pdf -o out.pdf
+dravenpdf encrypt     in.pdf -o out.pdf [--no-print] [--no-copy] [--no-modify] [--no-annotate] [--no-forms]
+                      # passwords: env DRAVENPDF_USER_PASSWORD / DRAVENPDF_OWNER_PASSWORD
+                      # (or --user-password / --owner-password, visible in the process list)
+dravenpdf decrypt     in.pdf -o out.pdf        # password: env DRAVENPDF_PDF_PASSWORD or prompt
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds

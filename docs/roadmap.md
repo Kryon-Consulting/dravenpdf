@@ -57,8 +57,8 @@ From the feature review (in the order they were built):
   to a cross-origin redirect target (see D11).
 
 ## M8 – Encryption, forms, signatures ◐
-Decided in D12. Order: encryption and passwords, then form filling and flattening,
-then digital signatures (keys configured on the server) and verification.
+Decided in D12. Order: encryption and passwords ☑, then form filling and flattening ☐,
+then digital signatures (keys configured on the server) and verification ☐.
 
 ## Later / out of scope for now
 - PDF/A (would need Ghostscript, which is AGPL; see D5)

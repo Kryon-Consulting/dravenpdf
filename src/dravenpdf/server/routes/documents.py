@@ -176,3 +176,48 @@ async def compress(file: PdfFile) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="compressed.pdf"'},
     )
+
+
+@router.post("/encrypt", response_class=Response, responses=PDF_RESPONSE)
+async def encrypt(
+    file: PdfFile,
+    user_password: Annotated[
+        str, Form(description="Needed to open the file; empty means anyone can open it.")
+    ] = "",
+    owner_password: Annotated[
+        str | None, Form(description="Unlocks full access; random if omitted.")
+    ] = None,
+    password: Annotated[
+        str | None, Form(description="The input's password, if it is already protected.")
+    ] = None,
+    allow_print: Annotated[bool, Form()] = True,
+    allow_copy: Annotated[bool, Form()] = True,
+    allow_modify: Annotated[bool, Form()] = True,
+    allow_annotate: Annotated[bool, Form()] = True,
+    allow_forms: Annotated[bool, Form()] = True,
+) -> Response:
+    """Encrypt with AES-256. The allow_* flags are advisory (honoured by viewers)."""
+    if (
+        not user_password
+        and not owner_password
+        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
+    ):
+        raise ApiError("invalid_request", "set a password or restrict a permission")
+    doc = await read_pdf(file, password)
+    result = await asyncio.to_thread(
+        doc.encrypt,
+        user_password=user_password, owner_password=owner_password,
+        allow_print=allow_print, allow_copy=allow_copy, allow_modify=allow_modify,
+        allow_annotate=allow_annotate, allow_forms=allow_forms,
+    )  # fmt: skip
+    return await pdf_response(result, "encrypted.pdf")
+
+
+@router.post("/decrypt", response_class=Response, responses=PDF_RESPONSE)
+async def decrypt(
+    file: PdfFile,
+    password: Annotated[str, Form(description="The user or owner password.")],
+) -> Response:
+    """Remove password protection (needs the password)."""
+    doc = await read_pdf(file, password)
+    return await pdf_response(await asyncio.to_thread(doc.decrypt), "decrypted.pdf")

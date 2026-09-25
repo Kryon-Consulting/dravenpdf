@@ -438,7 +438,7 @@ def test_text(client: TestClient) -> None:
 def test_openapi_lists_every_endpoint(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    assert len([p for p in paths if p.startswith("/v1/")]) == 16
+    assert len([p for p in paths if p.startswith("/v1/")]) == 18
 
 
 def test_split_holds_one_part_at_a_time(
@@ -612,5 +612,48 @@ def test_auth_only_on_the_url_endpoint(client: TestClient) -> None:
     response = client.post(
         "/v1/render/html", json={"html": "x", "auth": {"cookies": []}}, headers=AUTH
     )
+
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------- encryption
+
+
+def test_encrypt_and_decrypt_endpoints(client: TestClient) -> None:
+    import pikepdf
+
+    encrypted = client.post(
+        "/v1/pdf/encrypt",
+        files={"file": upload(pdf_bytes(2))},
+        data={"user_password": "pw-123", "allow_copy": "false"},
+        headers=AUTH,
+    )
+    assert encrypted.status_code == 200, encrypted.text
+    assert not pikepdf.open(io.BytesIO(encrypted.content), password="pw-123").allow.extract
+
+    locked = client.post(
+        "/v1/pdf/rotate", files={"file": ("e.pdf", encrypted.content)}, headers=AUTH
+    )
+    wrong = client.post(
+        "/v1/pdf/decrypt",
+        files={"file": ("e.pdf", encrypted.content)},
+        data={"password": "pw-999"},
+        headers=AUTH,
+    )
+    decrypted = client.post(
+        "/v1/pdf/decrypt",
+        files={"file": ("e.pdf", encrypted.content)},
+        data={"password": "pw-123"},
+        headers=AUTH,
+    )
+
+    assert (locked.status_code, locked.json()["error"]["code"]) == (422, "pdf_password")
+    assert wrong.status_code == 422
+    assert "pw-999" not in wrong.text
+    assert as_doc(decrypted.content).page_count == 2
+
+
+def test_encrypt_needs_a_password_or_restriction(client: TestClient) -> None:
+    response = client.post("/v1/pdf/encrypt", files={"file": upload(pdf_bytes())}, headers=AUTH)
 
     assert response.status_code == 400

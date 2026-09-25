@@ -19,7 +19,7 @@ from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.stamp import Position
-from dravenpdf.errors import BlockedRequestError, DravenPdfError
+from dravenpdf.errors import BlockedRequestError, DravenPdfError, PdfPasswordError
 from dravenpdf.options import (
     ColorScheme,
     HeaderFooter,
@@ -91,6 +91,8 @@ def main() -> None:
         app()
     except DravenPdfError as exc:
         typer.secho(f"error: {exc.message}", fg=typer.colors.RED, err=True)
+        if isinstance(exc, PdfPasswordError) and "needs a password" in exc.message:
+            typer.echo("hint: remove the password first with `dravenpdf decrypt`", err=True)
         if isinstance(exc, BlockedRequestError) and "non-public" in exc.message:
             typer.echo("hint: pass --allow-private to render local or internal addresses", err=True)
         sys.exit(1)
@@ -428,6 +430,64 @@ def metadata(
         _fail("give -o to write the changed copy")
     assert output is not None
     _write_pdf(doc.set_metadata(**changes), output)
+
+
+@app.command()
+def encrypt(
+    input: InputPdf,
+    output: Output,
+    user_password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_USER_PASSWORD",
+            help="Password to open the file (env DRAVENPDF_USER_PASSWORD; empty = none).",
+        ),
+    ] = "",
+    owner_password: Annotated[
+        str | None,
+        typer.Option(
+            envvar="DRAVENPDF_OWNER_PASSWORD",
+            help="Full-access password (env DRAVENPDF_OWNER_PASSWORD; random if omitted).",
+        ),
+    ] = None,
+    allow_print: Annotated[bool, typer.Option("--allow-print/--no-print")] = True,
+    allow_copy: Annotated[bool, typer.Option("--allow-copy/--no-copy")] = True,
+    allow_modify: Annotated[bool, typer.Option("--allow-modify/--no-modify")] = True,
+    allow_annotate: Annotated[bool, typer.Option("--allow-annotate/--no-annotate")] = True,
+    allow_forms: Annotated[bool, typer.Option("--allow-forms/--no-forms")] = True,
+) -> None:
+    """Encrypt a PDF (AES-256). Prefer the env variables to passing passwords as
+    arguments, which other users on the machine can see in the process list."""
+    if (
+        not user_password
+        and owner_password is None
+        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
+    ):
+        _fail("set a password or restrict a permission (e.g. --no-copy)")
+    doc = PdfDocument.open(input).encrypt(
+        user_password=user_password, owner_password=owner_password,
+        allow_print=allow_print, allow_copy=allow_copy, allow_modify=allow_modify,
+        allow_annotate=allow_annotate, allow_forms=allow_forms,
+    )  # fmt: skip
+    _write_pdf(doc, output)
+
+
+@app.command()
+def decrypt(
+    input: InputPdf,
+    output: Output,
+    password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_PDF_PASSWORD",
+            prompt=True,
+            hide_input=True,
+            help="The user or owner password (env DRAVENPDF_PDF_PASSWORD, else prompted).",
+        ),
+    ],
+) -> None:
+    """Remove password protection."""
+    _write_pdf(PdfDocument.open(input, password=password).decrypt(), output)
 
 
 @app.command()
