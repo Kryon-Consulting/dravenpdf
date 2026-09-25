@@ -90,9 +90,12 @@ Full reasoning is in `docs/decisions.md`.
   `RequestGuard.hop_headers`; redirect tests in `tests/integration/test_auth.py` fail if
   credentials follow a redirect to another origin.
 - Signed documents: `PdfDocument.to_bytes()` must keep returning the exact source bytes
-  of an unmodified document, and every operation must go through `_derive()` (which
-  carries pending encryption and warns about invalidated signatures). Never re-save a
-  signed file on a code path that claims to leave it unchanged.
+  of an unmodified document. Every operation that writes a new file must start from
+  `_rewritable()` (which removes signatures, and warns, before the operation runs, so
+  flattening can't burn one into the page) and end with `_derive()` (which carries
+  pending encryption); inputs whose pages go into the result go through
+  `_pages_source()`. Never re-save a signed file on a code path that claims to leave it
+  unchanged, and never write one out with its (now broken) signatures.
 - Passwords and key passphrases follow the same rules as `RenderAuth` credentials:
   `SecretStr` where stored, never in messages, and `from None` when re-raising errors
   that might contain them.

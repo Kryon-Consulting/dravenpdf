@@ -66,3 +66,12 @@ headers) are stripped from logs and errors.
   uploaded. Signatures are advanced electronic signatures (PAdES baseline, optional
   RFC 3161 timestamp). EU qualified signatures need certified signing hardware and a
   qualified provider and are not a goal.
+- **Changing a signed file removes its signatures.** An unchanged signed document is
+  written back byte for byte. Any operation writes a new file, which would break the
+  signatures, so it removes them first (the signed fields, their widgets, `/Perms` and
+  `/DSS`; other fields stay) and emits `SignatureInvalidatedWarning`. The result is a
+  plain unsigned file (`is_signed` is False, before and after reopening), never one
+  carrying signatures that verify as broken or a visible "signature" that isn't one.
+- **CLI `verify` is strict:** it exits 1 unless the file is signed, every signature is
+  intact and trusted by a `--trust` root, and a signature covers the whole file.
+  `--integrity-only` drops the trust requirement.

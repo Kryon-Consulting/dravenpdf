@@ -118,6 +118,11 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 Other PDF endpoints refuse password-protected uploads with 422 `pdf_password`;
 decrypt them first. Passwords never appear in responses or logs.
 
+Every endpoint that returns a changed PDF (merge, split, stamp, form fill, encrypt,
+...) returns it **without signatures** when an input was signed: the change would
+break them, so the signed fields and their widgets are removed. Only `/v1/pdf/sign`
+returns a signed file; don't send it through other endpoints afterwards.
+
 ```bash
 curl -X POST http://localhost:8000/v1/pdf/merge -H "X-API-Key: $KEY" \
   -F files=@a.pdf -F files=@b.pdf -o merged.pdf

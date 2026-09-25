@@ -233,9 +233,15 @@ for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
 - PAdES baseline signatures via pyHanko. These are **advanced** electronic signatures;
   EU *qualified* signatures (eIDAS) are out of scope.
 - **Sign last.** Signing appends to the file's exact bytes. A document read from a
-  file and not changed is written back byte for byte, so its signatures stay valid;
-  any operation on a signed document writes a new file and emits
-  `SignatureInvalidatedWarning`. Pending encryption blocks signing (`SigningError`).
+  file and not changed (or `copy()`-ed) is written back byte for byte, so its
+  signatures stay valid. Any operation on a signed document (page operations, merge
+  and insert, stamps, metadata, forms, encryption, `to_bytes(compress=True)`) writes a
+  new file, which would break the signatures, so the result has them **removed**: the
+  signed fields and their widgets (a visible signature disappears), `/Perms` and
+  `/DSS`. Other form fields and unsigned signature fields stay. It emits
+  `SignatureInvalidatedWarning`, and the result's `is_signed` is False, also after
+  reopening. Reading (`extract_text`, `to_images`, `verify_signatures`) changes
+  nothing. Pending encryption blocks signing (`SigningError`).
 - A second signature goes into a new field (`Signature2`, ...); the first then no
   longer covers the whole document, which `verify_signatures` reports.
 - `trusted` only counts the trust roots you pass (PEM or DER); the operating system's
@@ -369,7 +375,9 @@ dravenpdf decrypt     in.pdf -o out.pdf        # password: env DRAVENPDF_PDF_PAS
 dravenpdf sign        in.pdf -o out.pdf --key company.p12 [--reason] [--location] [--contact]
                       [--visible PAGE,X,Y,W,H] [--timestamp-url URL]
                       # key passphrase: env DRAVENPDF_KEY_PASSWORD or prompt
-dravenpdf verify      in.pdf [--trust ca.pem ...]    # JSON; exit 1 if broken / untrusted
+dravenpdf verify      in.pdf [--trust ca.pem ...] [--integrity-only]
+                      # JSON; exit 1 unless signed, intact, trusted by --trust and covering
+                      # the whole file; --integrity-only skips the trust check
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds
