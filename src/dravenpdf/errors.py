@@ -102,7 +102,8 @@ class SigningError(DravenPdfError):
 
 
 class SignatureInvalidatedWarning(UserWarning):
-    """An operation on a signed document writes a new file, so its signatures break."""
+    """An operation on a signed document writes a new file, which would break its
+    signatures, so the result has them removed."""
 
 
 class PoolExhaustedError(DravenPdfError):

@@ -3,8 +3,9 @@
 Signing appends an incremental update to the document's exact bytes (PAdES
 baseline, optionally with an RFC 3161 timestamp). Anything that rewrites the file
 afterwards breaks the signature, so :class:`~dravenpdf.document.pdf.PdfDocument`
-hands back a signed document's original bytes untouched, and warns when an
-operation on a signed document produces a new, unsigned file.
+hands back a signed document's original bytes untouched. An operation that writes a
+new file removes the signatures first (:func:`strip_signatures`) and warns, so the
+result is a plain unsigned file rather than one carrying broken signatures.
 
 These are advanced electronic signatures. EU *qualified* signatures need certified
 signing hardware and a qualified provider, which is out of scope (decision D12).
@@ -20,6 +21,7 @@ from datetime import datetime
 from os import PathLike
 from pathlib import Path
 
+import pikepdf
 from asn1crypto import x509 as asn1_x509
 from pydantic import SecretStr
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
@@ -43,6 +45,120 @@ def _drop_traceback(record: logging.LogRecord) -> bool:
 
 
 logging.getLogger("pyhanko.sign.validation.generic_cms").addFilter(_drop_traceback)
+
+
+_MAX_FIELD_NODES = 10_000  # bounds the walk over a (possibly cyclic) field tree
+
+
+def _field_nodes(pdf: pikepdf.Pdf) -> list[tuple[pikepdf.Array, pikepdf.Dictionary, object]]:
+    """Every node of the form's field tree as (containing array, node, field type).
+
+    The field type is inherited from parents, as in the PDF spec. Signed signature
+    fields are not descended into: their kids are widgets.
+    """
+    acroform = pdf.Root.get("/AcroForm")
+    if not isinstance(acroform, pikepdf.Dictionary):
+        return []
+    top = acroform.get("/Fields")
+    if not isinstance(top, pikepdf.Array):
+        return []
+    nodes: list[tuple[pikepdf.Array, pikepdf.Dictionary, object]] = []
+    pending: list[tuple[pikepdf.Array, object]] = [(top, None)]
+    while pending and len(nodes) < _MAX_FIELD_NODES:
+        array, inherited = pending.pop()
+        for node in array:
+            if not isinstance(node, pikepdf.Dictionary):
+                continue
+            kind = node.get("/FT", inherited)
+            nodes.append((array, node, kind))
+            kids = node.get("/Kids")
+            signed = kind == pikepdf.Name.Sig and "/V" in node
+            if not signed and isinstance(kids, pikepdf.Array):
+                pending.append((kids, kind))
+    return nodes
+
+
+def _filled_signature_fields(pdf: pikepdf.Pdf) -> list[tuple[pikepdf.Array, pikepdf.Dictionary]]:
+    return [
+        (array, node)
+        for array, node, kind in _field_nodes(pdf)
+        if kind == pikepdf.Name.Sig and "/V" in node
+    ]
+
+
+def has_signature_values(pdf: pikepdf.Pdf) -> bool:
+    """Any signature field that has been signed (cheap check, no validation)."""
+    return bool(_filled_signature_fields(pdf))
+
+
+def _same(a: pikepdf.Object, b: pikepdf.Object) -> bool:
+    if a.is_indirect or b.is_indirect:
+        return a.is_indirect and b.is_indirect and a.objgen == b.objgen
+    return bool(a == b)
+
+
+def strip_signatures(pdf: pikepdf.Pdf) -> bool:
+    """Remove every signed signature field from ``pdf``, in place; True if any were.
+
+    For a file that is about to be written anew, where the signatures would be broken
+    anyway. Removes the fields, their widgets (so a visible signature no longer shows
+    on the page), the document's signature permissions (``/Perms``: DocMDP, UR3) and
+    its validation data (``/DSS``). Other form fields, and unsigned signature fields
+    waiting to be signed, stay.
+    """
+    filled = _filled_signature_fields(pdf)
+    if not filled:
+        return False
+    removed: set[tuple[int, int]] = set()
+    for array, field in filled:
+        for index in reversed(range(len(array))):
+            if _same(array[index], field):
+                del array[index]
+        if field.is_indirect:
+            removed.add(field.objgen)
+        for kid in field.get("/Kids", []):
+            if isinstance(kid, pikepdf.Dictionary) and kid.is_indirect:
+                removed.add(kid.objgen)
+    for page in pdf.pages:
+        annots = page.obj.get("/Annots")
+        if not isinstance(annots, pikepdf.Array):
+            continue
+        kept = [a for a in annots if not _belongs_to(a, removed)]
+        if len(kept) == len(annots):
+            continue
+        if kept:
+            page.obj.Annots = pikepdf.Array(kept)
+        else:
+            del page.obj["/Annots"]
+    # A parent field whose only kids were signatures would be left empty.
+    for array, node, _ in _field_nodes(pdf):
+        kids = node.get("/Kids")
+        if isinstance(kids, pikepdf.Array) and len(kids) == 0:
+            for index in reversed(range(len(array))):
+                if _same(array[index], node):
+                    del array[index]
+    root = pdf.Root
+    for key in ("/Perms", "/DSS"):
+        if key in root:
+            del root[key]
+    acroform = root.AcroForm
+    remaining = _field_nodes(pdf)
+    if not remaining:
+        del root["/AcroForm"]
+    elif any(kind == pikepdf.Name.Sig for _, _, kind in remaining):
+        acroform.SigFlags = 1  # signature fields exist; no longer append-only
+    elif "/SigFlags" in acroform:
+        del acroform["/SigFlags"]
+    return True
+
+
+def _belongs_to(annot: pikepdf.Object, fields: set[tuple[int, int]]) -> bool:
+    if not isinstance(annot, pikepdf.Dictionary):
+        return False
+    if annot.is_indirect and annot.objgen in fields:
+        return True
+    parent = annot.get("/Parent")
+    return isinstance(parent, pikepdf.Dictionary) and parent.is_indirect and parent.objgen in fields
 
 
 def _plain(value: str | SecretStr | None) -> str | None:

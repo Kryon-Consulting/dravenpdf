@@ -59,24 +59,6 @@ METADATA_KEYS: dict[str, str] = {
 _EDITABLE = ("title", "author", "subject", "keywords", "creator", "producer")
 
 
-def _has_signature_values(pdf: pikepdf.Pdf) -> bool:
-    """Any signature field that has been signed (cheap check, no validation)."""
-    acroform = pdf.Root.get("/AcroForm")
-    if not isinstance(acroform, pikepdf.Dictionary):
-        return False
-    pending = list(acroform.get("/Fields", []))
-    seen = 0
-    while pending and seen < 10_000:
-        seen += 1
-        field = pending.pop()
-        if not isinstance(field, pikepdf.Dictionary):
-            continue
-        if field.get("/FT") == pikepdf.Name.Sig and "/V" in field:
-            return True
-        pending.extend(field.get("/Kids", []))
-    return False
-
-
 def _plain(value: str | SecretStr) -> str:
     return value.get_secret_value() if isinstance(value, SecretStr) else value
 
@@ -85,6 +67,13 @@ def _as_pdf(document: PdfDocument | bytes) -> pikepdf.Pdf:
     if isinstance(document, PdfDocument):
         return document._pdf
     return PdfDocument.from_bytes(document)._pdf
+
+
+def _pages_source(document: PdfDocument | bytes) -> pikepdf.Pdf:
+    """``document`` as a PDF whose pages go into another file: signatures removed."""
+    if not isinstance(document, PdfDocument):
+        document = PdfDocument.from_bytes(document)
+    return document._rewritable(stacklevel=4)
 
 
 class PdfDocument:
@@ -108,7 +97,6 @@ class PdfDocument:
         # The exact bytes this document was read from, while it is unmodified: written
         # back as-is, so signatures and incremental updates survive.
         self._source: bytes | None = None
-        self._signed = False
         self.render_report: RenderReport | None = None
         """Set on documents returned by a renderer: what failed while rendering.
         Documents derived from this one (rotate, merge, ...) don't carry it."""
@@ -134,7 +122,6 @@ class PdfDocument:
         doc.was_encrypted = pdf.is_encrypted
         if not pdf.is_encrypted:  # opening decrypts, so encrypted input is rewritten
             doc._source = data
-            doc._signed = _has_signature_values(pdf)
         return doc
 
     @classmethod
@@ -163,7 +150,7 @@ class PdfDocument:
         """All pages of each document, in order. Metadata, and pending encryption,
         come from the first."""
         items = list(documents)
-        merged = cls(ops.merge([_as_pdf(d) for d in items]))
+        merged = cls(ops.merge(list(map(_pages_source, items))))
         if items and isinstance(items[0], PdfDocument):
             merged._encryption = items[0]._encryption
         return merged
@@ -200,7 +187,7 @@ class PdfDocument:
 
     def extract(self, ranges: str) -> PdfDocument:
         """A new document with the pages in ``ranges`` (1-based, e.g. ``"2-5"``)."""
-        return self._derive(ops.extract(self._pdf, ranges))
+        return self._derive(ops.extract(self._rewritable(), ranges))
 
     def split(
         self, *, every: int | None = None, ranges: Sequence[str] | None = None
@@ -209,7 +196,7 @@ class PdfDocument:
 
         Holds every part in memory; use :meth:`iter_split` for large splits.
         """
-        return list(self.iter_split(every=every, ranges=ranges))
+        return list(self._split_parts(every, ranges))
 
     def iter_split(
         self, *, every: int | None = None, ranges: Sequence[str] | None = None
@@ -221,26 +208,31 @@ class PdfDocument:
         holds a single part at a time. Don't use this document from another thread
         while iterating.
         """
+        return self._split_parts(every, ranges)
+
+    def _split_parts(
+        self, every: int | None, ranges: Sequence[str] | None
+    ) -> Iterator[PdfDocument]:
         plan = ops.plan_split(self.page_count, every=every, ranges=ranges)
         # map() rather than a generator expression: it keeps no reference to the
         # previous part while the next one is built.
-        return map(self._derive, ops.iter_parts(self._pdf, plan))
+        return map(self._derive, ops.iter_parts(self._rewritable(stacklevel=4), plan))
 
     def rotate(self, degrees: int, pages: Iterable[int] | None = None) -> PdfDocument:
         """Rotate clockwise by a multiple of 90 degrees; all pages unless ``pages`` given."""
-        return self._derive(ops.rotate(self._pdf, degrees, pages))
+        return self._derive(ops.rotate(self._rewritable(), degrees, pages))
 
     def delete(self, pages: Iterable[int]) -> PdfDocument:
         """Remove the given pages (0-based)."""
-        return self._derive(ops.delete(self._pdf, pages))
+        return self._derive(ops.delete(self._rewritable(), pages))
 
     def reorder(self, order: Sequence[int]) -> PdfDocument:
         """Put pages in a new order, e.g. ``[2, 0, 1]``; must name every page once."""
-        return self._derive(ops.reorder(self._pdf, order))
+        return self._derive(ops.reorder(self._rewritable(), order))
 
     def insert(self, other: PdfDocument | bytes, at: int) -> PdfDocument:
         """Insert all pages of ``other`` before page ``at``; ``at=page_count`` appends."""
-        return self._derive(ops.insert(self._pdf, _as_pdf(other), at))
+        return self._derive(ops.insert(self._rewritable(), _pages_source(other), at))
 
     def set_metadata(
         self,
@@ -257,7 +249,7 @@ class PdfDocument:
             title=title, author=author, subject=subject,
             keywords=keywords, creator=creator, producer=producer,
         )  # fmt: skip
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         for name in _EDITABLE:
             value = values[name]
             if value is None:
@@ -293,7 +285,7 @@ class PdfDocument:
         Western European (cp1252) characters only; use :meth:`stamp_html` for other
         scripts or richer styling. ``margin`` (points) applies to non-center positions.
         """
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         stamp_ops.stamp_text(
             result, text, font_size=font_size, color=color, opacity=opacity, angle=angle,
             position=position, margin=margin, pages=pages, under=under,
@@ -313,7 +305,7 @@ class PdfDocument:
     ) -> PdfDocument:
         """Image stamp (PNG, JPEG, ...; transparency kept). ``width`` in points,
         default the image's size at 96 dpi; shrunk to fit inside the margins."""
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         stamp_ops.stamp_image(
             result, image, width=width, position=position, margin=margin,
             opacity=opacity, pages=pages, under=under,
@@ -331,7 +323,7 @@ class PdfDocument:
     ) -> PdfDocument:
         """Draw a page of another PDF (letterhead, form background, ...) on each page,
         scaled to fit and centered. ``under=True`` puts it behind the content."""
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         stamp_ops.overlay_page(
             result, _as_pdf(stamp), stamp_page=stamp_page, opacity=opacity,
             pages=pages, under=under,
@@ -393,7 +385,7 @@ class PdfDocument:
         :class:`LimitExceededError` when passed; see ``images.pdf_to_images``.
         """
         return image_ops.pdf_to_images(
-            self.to_bytes(),
+            self._readable_bytes(),
             dpi=dpi,
             fmt=fmt,
             pages=pages,
@@ -404,7 +396,7 @@ class PdfDocument:
 
     def extract_text(self) -> list[str]:
         """Text of each page. Scanned pages have none (no OCR)."""
-        return text_ops.extract_text(self.to_bytes())
+        return text_ops.extract_text(self._readable_bytes())
 
     # ------------------------------------------------------------------ forms
 
@@ -417,13 +409,13 @@ class PdfDocument:
         checkboxes, an option name for radio groups. Everything is checked first, so
         either all values apply or none (``PdfOperationError``). ``flatten=True`` also
         burns the values into the pages and removes the form."""
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         form_ops.fill(result, values, flatten=flatten)
         return self._derive(result)
 
     def flatten_form(self) -> PdfDocument:
         """Burn the current field values into the pages and remove the form."""
-        result = ops.clone(self._pdf)
+        result = ops.clone(self._rewritable())
         form_ops.flatten_form(result)
         return self._derive(result)
 
@@ -431,8 +423,12 @@ class PdfDocument:
 
     @property
     def is_signed(self) -> bool:
-        """True if the file this document was read from has filled signature fields."""
-        return self._signed
+        """True if the document has signed signature fields.
+
+        Only a document read from a file (and not changed since) can have them:
+        operations write a new file, which would break them, so they remove them.
+        """
+        return sign_ops.has_signature_values(self._pdf)
 
     def sign(
         self,
@@ -446,10 +442,10 @@ class PdfDocument:
         timestamp_url: str | None = None,
     ) -> PdfDocument:
         """Digitally sign (PAdES). Returns the signed document; write it with
-        ``to_bytes()`` / ``save()`` and don't change it afterwards, since any change
-        writes a new file and invalidates the signature. ``box`` makes the signature
-        visible; ``timestamp_url`` adds an RFC 3161 timestamp. Sign last: after
-        filling, stamping and so on, and without pending encryption."""
+        ``to_bytes()`` / ``save()`` and don't change it afterwards: any change writes a
+        new file, which removes the signature (see :meth:`is_signed`). ``box`` makes
+        the signature visible; ``timestamp_url`` adds an RFC 3161 timestamp. Sign last:
+        after filling, stamping and so on, and without pending encryption."""
         if self._encryption is not None:
             raise SigningError(
                 "can't sign a document with pending encryption: encrypting after signing "
@@ -464,7 +460,7 @@ class PdfDocument:
     def verify_signatures(self, trust_roots: Iterable[bytes] = ()) -> list[SignatureInfo]:
         """Check each embedded signature. ``trust_roots`` are PEM or DER certificates
         (e.g. your CA); without them no signature counts as ``trusted``."""
-        return sign_ops.verify(self.to_bytes(), sign_ops.load_certificates(trust_roots))
+        return sign_ops.verify(self._readable_bytes(), sign_ops.load_certificates(trust_roots))
 
     # ------------------------------------------------------------------ encryption
 
@@ -502,13 +498,13 @@ class PdfDocument:
             print_lowres=allow_print,
             print_highres=allow_print,
         )
-        result = self._derive(ops.clone(self._pdf))
+        result = self._derive(ops.clone(self._rewritable()))
         result._encryption = pikepdf.Encryption(owner=owner, user=user, allow=permissions)
         return result
 
     def decrypt(self) -> PdfDocument:
         """A copy that is written without encryption."""
-        result = self._derive(ops.clone(self._pdf))
+        result = self._derive(ops.clone(self._rewritable()))
         result._encryption = None
         return result
 
@@ -517,21 +513,50 @@ class PdfDocument:
         """True if :meth:`to_bytes` / :meth:`save` will write an encrypted file."""
         return self._encryption is not None
 
+    def _rewritable(self, *, stacklevel: int = 3) -> pikepdf.Pdf:
+        """The PDF an operation that writes a new file starts from (don't modify it).
+
+        For a signed document: a copy without its signatures (see
+        ``signing.strip_signatures``), with a warning, since the new file would break
+        them. Removing them first means flattening a form can't burn a signature's
+        appearance into the page.
+        """
+        if not sign_ops.has_signature_values(self._pdf):
+            return self._pdf
+        unsigned = ops.clone(self._pdf)
+        sign_ops.strip_signatures(unsigned)
+        warnings.warn(
+            "this document is digitally signed; the change writes a new file, which "
+            "would break the signatures, so the result has them removed",
+            SignatureInvalidatedWarning,
+            stacklevel=stacklevel,
+        )
+        return unsigned
+
     def _derive(self, pdf: pikepdf.Pdf) -> PdfDocument:
-        """A document made from this one: keeps its pending encryption."""
-        if self._signed:
-            warnings.warn(
-                "this document is digitally signed; the change writes a new file, "
-                "which invalidates its signatures",
-                SignatureInvalidatedWarning,
-                stacklevel=3,
-            )
+        """A document made from this one: keeps its pending encryption.
+
+        ``pdf`` must come from :meth:`_rewritable`, so it carries no signatures.
+        """
         doc = PdfDocument(pdf)
         doc._encryption = self._encryption
         return doc
 
     def copy(self) -> PdfDocument:
-        return self._derive(ops.clone(self._pdf))
+        """An independent copy; an unchanged file stays byte for byte the same."""
+        doc = self._derive(ops.clone(self._pdf))
+        doc._source = self._source
+        doc.was_encrypted = self.was_encrypted
+        return doc
+
+    def _readable_bytes(self) -> bytes:
+        """The document as a file for reading it (images, text, verification):
+        unencrypted, and with nothing removed."""
+        if self._source is not None:
+            return self._source
+        buffer = io.BytesIO()
+        self._pdf.save(buffer)
+        return buffer.getvalue()
 
     # ------------------------------------------------------------------ output
 
@@ -539,23 +564,20 @@ class PdfDocument:
         """Serialize to PDF bytes.
 
         A document that was read and not changed is returned byte for byte, so
-        digital signatures stay valid. Otherwise the file is written anew, with
+        digital signatures stay valid. Otherwise the file is written anew, without
+        signatures (it would break them; see :meth:`is_signed`) and with
         uncompressed streams compressed. ``compress=True`` also drops unused page
         resources, recompresses streams at the highest level and packs objects into
         object streams, which pays off on larger documents (and rewrites the file).
         """
         if self._source is not None and self._encryption is None and not compress:
             return self._source
-        if compress and self._signed:
-            warnings.warn(
-                "compressing rewrites the file, which invalidates its signatures",
-                SignatureInvalidatedWarning,
-                stacklevel=2,
-            )
+        pdf = self._rewritable()
         buffer = io.BytesIO()
         encryption: pikepdf.Encryption | bool = self._encryption or False
         if compress:
-            pdf = ops.clone(self._pdf)
+            if pdf is self._pdf:
+                pdf = ops.clone(pdf)
             pdf.remove_unreferenced_resources()
             pdf.save(
                 buffer,
@@ -565,7 +587,7 @@ class PdfDocument:
                 encryption=encryption,
             )
         else:
-            self._pdf.save(buffer, encryption=encryption)
+            pdf.save(buffer, encryption=encryption)
         return buffer.getvalue()
 
     def save(self, path: str | PathLike[str], *, compress: bool = False) -> None:

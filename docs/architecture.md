@@ -190,8 +190,13 @@ save-and-reopen their result (`pages._detach`) before returning it.
 - **`signing.py`**: `SigningKey` (PKCS#12), `sign()` (pyHanko incremental update,
   PAdES, optional timestamp) and `verify()` (explicit trust roots only).
   `PdfDocument` keeps the exact bytes it was read from while unmodified (`_source`)
-  and returns them from `to_bytes()`, so signatures survive; `_derive()` warns
-  (`SignatureInvalidatedWarning`) when an operation rewrites a signed document.
+  and returns them from `to_bytes()`, so signatures survive. Operations that write a
+  new file start from `_rewritable()`, which for a signed document returns a copy with
+  its signatures removed (`signing.strip_signatures()`: the signed fields, their
+  widgets, `/Perms`, `/DSS`) and warns (`SignatureInvalidatedWarning`); inputs to
+  `merge`/`insert` go through `_pages_source()` the same way. Stripping happens before
+  the operation, so flattening can't burn a signature's appearance into the page.
+  `is_signed` reads the document itself, so it agrees with the written file.
 - **`_pdfium.py`**: pdfium is not thread-safe, so every pdfium call holds one global
   lock (`_pdfium.LOCK`, via `open_pdf()`).
 - **Compression** lives in `PdfDocument.save(compress=True)`: pikepdf object

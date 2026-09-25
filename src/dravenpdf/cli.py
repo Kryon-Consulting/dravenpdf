@@ -517,14 +517,32 @@ def verify(
         list[Path] | None,
         typer.Option(exists=True, dir_okay=False, help="Trusted CA certificate(s), PEM/DER."),
     ] = None,
+    integrity_only: Annotated[
+        bool,
+        typer.Option(
+            "--integrity-only",
+            help="Only check that the signatures are intact; don't require a trusted signer.",
+        ),
+    ] = False,
 ) -> None:
-    """Check signatures; prints JSON. Exits with 1 if any signature is broken, or if
-    --trust is given and a signer isn't trusted."""
+    """Check signatures; prints JSON. Exits with 1 unless the file is signed, every
+    signature is intact and trusted by a --trust root, and a signature covers the whole
+    file (no unsigned changes after the last one)."""
     roots = [p.read_bytes() for p in trust or []]
     infos = PdfDocument.open(input).verify_signatures(roots)
     typer.echo(json.dumps([asdict(i) for i in infos], indent=2, default=str))
-    broken = [i for i in infos if not (i.intact and i.valid) or (roots and not i.trusted)]
-    if broken:
+    problems = [] if infos else ["the file has no signatures"]
+    for info in infos:
+        if not (info.intact and info.valid):
+            problems.append(f"{info.field}: the signature is broken")
+        elif not info.trusted and not integrity_only:
+            hint = "" if roots else "; pass --trust CA.pem, or use --integrity-only"
+            problems.append(f"{info.field}: signer not trusted{hint}")
+    if infos and not any(info.covers_whole_document for info in infos):
+        problems.append("the file was changed after its last signature")
+    for problem in problems:
+        typer.echo(problem, err=True)
+    if problems:
         raise typer.Exit(1)
 
 
