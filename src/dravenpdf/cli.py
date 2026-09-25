@@ -237,11 +237,14 @@ def split(
 ) -> None:
     """Split a PDF into parts: part-1.pdf, part-2.pdf, ..."""
     doc = PdfDocument.open(input)
-    parts = doc.split(every=every, ranges=ranges)
+    parts = doc.iter_split(every=every, ranges=ranges)  # validates before anything is written
     output.mkdir(parents=True, exist_ok=True)
-    for number, part in enumerate(parts, start=1):
-        part.save(output / f"part-{number}.pdf")
-    typer.echo(f"wrote {len(parts)} parts to {output}", err=True)
+    count = 0
+    for part in parts:  # not enumerate(): it would keep the previous part alive
+        count += 1
+        part.save(output / f"part-{count}.pdf")
+        del part
+    typer.echo(f"wrote {count} parts to {output}", err=True)
 
 
 @app.command()

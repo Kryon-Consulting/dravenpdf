@@ -193,24 +193,27 @@ class AsyncRenderer:
         self, load: Loader, opts: RenderOptions, guard: RequestGuard | None = None
     ) -> PdfDocument:
         guard = guard or self._new_guard()
-        # One deadline for the whole render: waiting for a browser slot counts too.
+        # One deadline for the whole render: waiting for a browser slot, launching
+        # Chromium, creating the context and page, loading, waiting and printing.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + opts.timeout_ms / 1000
         try:
-            async with self.pool.context(
-                deadline=deadline, service_workers="block", accept_downloads=False
-            ) as ctx:
-                await guard.install(ctx)
-                page = await ctx.new_page()
-                page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
+            async with (
+                asyncio.timeout_at(deadline),
+                self.pool.context(
+                    deadline=deadline, service_workers="block", accept_downloads=False
+                ) as ctx,
+            ):
                 try:
-                    async with asyncio.timeout_at(deadline):
-                        await page.emulate_media(media=opts.media)
-                        await load(page)
-                        await wait_until_ready(page, opts)
-                        if self._on_blocked == "fail":
-                            guard.raise_if_blocked()
-                        data = await page.pdf(**opts.to_pdf_kwargs())
+                    await guard.install(ctx)
+                    page = await ctx.new_page()
+                    page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
+                    await page.emulate_media(media=opts.media)
+                    await load(page)
+                    await wait_until_ready(page, opts)
+                    if self._on_blocked == "fail":
+                        guard.raise_if_blocked()
+                    data = await page.pdf(**opts.to_pdf_kwargs())
                 except PlaywrightError as exc:
                     if isinstance(exc, PlaywrightTimeoutError):
                         raise

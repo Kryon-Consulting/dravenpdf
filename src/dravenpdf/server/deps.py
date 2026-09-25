@@ -151,6 +151,7 @@ def _write_zip(
                         f"the result is larger than the {max_bytes:,}-byte output limit"
                     )
                 archive.writestr(name, data)
+                del data  # written; don't hold it while the next file is produced
     except BaseException:
         spool.close()
         raise

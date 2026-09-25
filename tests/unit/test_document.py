@@ -260,3 +260,30 @@ def test_compress_shrinks_uncompressed_content() -> None:
     assert len(raw) > 80_000
     assert len(packed) < len(raw) / 10
     assert PdfDocument.from_bytes(packed).page_count == 1
+
+
+# ---------------------------------------------------------------- incremental split
+
+
+def test_iter_split_builds_parts_on_demand(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dravenpdf.document import pages
+
+    built: list[int] = []
+    original = pages._from_pages
+
+    def counting(source: pikepdf.Pdf, indices: object) -> pikepdf.Pdf:
+        built.append(1)
+        return original(source, indices)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pages, "_from_pages", counting)
+    parts = make_pdf(5).iter_split(every=2)
+
+    assert built == []
+    assert widths(next(parts)) == [100, 101]
+    assert len(built) == 1
+    assert [widths(p) for p in parts] == [[102, 103], [104]]
+
+
+def test_iter_split_checks_arguments_before_building_anything() -> None:
+    with pytest.raises(PdfOperationError, match="past the last page"):
+        make_pdf(3).iter_split(ranges=["1", "9"])  # raises at the call, not on next()

@@ -6,6 +6,7 @@ Page fields are 1-based strings like "1,3-5,8-".
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -54,10 +55,21 @@ async def split(
     ] = None,
 ) -> Response:
     doc = await read_pdf(file)
-    parts = await asyncio.to_thread(doc.split, every=every, ranges=ranges)
-    # A generator, so each part is saved in zip_response's worker thread and then dropped.
-    files = ((f"part-{i}.pdf", p.to_bytes()) for i, p in enumerate(parts, 1))
+    # iter_split checks the arguments now; each part is then built, serialized and
+    # dropped in turn inside zip_response's worker thread, so only one exists at a time.
+    files = _serialized_parts(doc.iter_split(every=every, ranges=ranges))
     return await zip_response(files, "parts.zip", max_bytes=settings_of(request).max_output_bytes)
+
+
+def _serialized_parts(parts: Iterator[PdfDocument]) -> Iterator[tuple[str, bytes]]:
+    # A plain counter, not enumerate(): enumerate keeps its last (index, item) tuple
+    # for reuse, which would keep the previous part alive while the next is built.
+    number = 0
+    for part in parts:
+        number += 1  # noqa: SIM113 - see above
+        data = part.to_bytes()
+        del part  # drop this part before the next one is built
+        yield f"part-{number}.pdf", data
 
 
 @router.post("/extract", response_class=Response, responses=PDF_RESPONSE)
