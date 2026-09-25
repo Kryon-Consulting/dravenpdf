@@ -18,9 +18,9 @@ libraries like IronPDF, but uses open-source parts:
 
 ## Current status
 
-Planning and documentation are done; code is not yet scaffolded. The planned
-build order is in `docs/roadmap.md`. Update that file (and the status line in
-`README.md`) as milestones land.
+M1 (project skeleton) is done: packaging, `errors.py`, `options.py`, tooling
+and CI. Next is M2 (rendering core). The build order is in `docs/roadmap.md`.
+Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
 
@@ -60,7 +60,7 @@ Full reasoning is in `docs/decisions.md`.
 - Every Playwright render uses a **new browser context** and must go through the
   request guard in `render/guards.py` (SSRF protection). Never bypass it.
 
-## Commands (once scaffolded)
+## Commands
 
 ```bash
 uv sync --all-extras                 # install everything incl. dev tools
@@ -69,6 +69,8 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run pytest -m "not browser"       # fast, no Chromium
 uv run pytest                        # full suite
+make check                           # lint + typecheck + unit tests
+# once the CLI (M5) and server (M6) exist:
 uv run dravenpdf render in.html -o out.pdf
 DRAVENPDF_API_KEY=dev uv run uvicorn dravenpdf.server.app:create_app --factory --reload
 ```

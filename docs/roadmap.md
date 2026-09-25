@@ -5,9 +5,10 @@ Status key: ☐ not started · ◐ in progress · ☑ done
 ## M0 – Planning and docs ☑
 Research, decisions, architecture, API design (this folder).
 
-## M1 – Project skeleton ☐
+## M1 – Project skeleton ☑
 `pyproject.toml` (uv + hatchling, `[server]` extra), `src/dravenpdf` package,
 `errors.py`, `options.py`, ruff/mypy/pytest config, Makefile, CI workflow.
+`RenderOptions.to_pdf_kwargs()` already maps options to Playwright's `page.pdf()`.
 
 ## M2 – Rendering core ☐
 `BrowserPool`, `AsyncRenderer` (`from_html`, `from_url`, `from_file`), guards,
