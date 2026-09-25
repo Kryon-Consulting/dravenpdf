@@ -111,7 +111,7 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 | `POST /v1/pdf/form/flatten` | `file`, `password`? | `application/pdf` |
 | `GET /v1/pdf/signing-keys` | – | `application/json`: `{"keys": [{name, subject, not_after}]}` |
 | `POST /v1/pdf/sign` | `file`, `key` (a configured key's name), `reason`?, `location`?, `contact`?, `field_name`?, visible: `page` (1-based), `x`, `y`, `width`, `height` (points, from bottom-left)?, `timestamp`? (uses `DRAVENPDF_TIMESTAMP_URL`), `password`? | `application/pdf` (the signed file; don't change it afterwards) |
-| `POST /v1/pdf/verify` | `file`, `password`? | `application/json`: `{"signatures": [{field, signer, signed_at, intact, valid, trusted, covers_whole_document, timestamped, reason, location, ok}]}` |
+| `POST /v1/pdf/verify` | `file`, `password`? (an encrypted file is checked as uploaded), `integrity_only`? | `application/json`: `{"ok", "problems": [...], "signatures": [{field, signer, signed_at, intact, valid, trusted, covers_whole_document, timestamped, reason, location, ok}]}`. A signature's `ok` = intact, valid and trusted by `DRAVENPDF_TRUST_ROOTS`. The top-level `ok` judges the document: at least one signature, all `ok` (trust skipped with `integrity_only`), and one covering the whole file; `problems` says what failed |
 | `POST /v1/pdf/encrypt` | `file`, `user_password`?, `owner_password`? (random if omitted), `password`? (if the input is already protected), `allow_print`/`allow_copy`/`allow_modify`/`allow_annotate`/`allow_forms`? | `application/pdf` (AES-256) |
 | `POST /v1/pdf/decrypt` | `file`, `password` | `application/pdf` |
 

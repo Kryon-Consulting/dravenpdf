@@ -16,7 +16,7 @@ from fastapi.responses import Response
 
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.document.signing import SignatureBox, SigningKey
+from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
@@ -341,11 +341,16 @@ async def verify(
     request: Request,
     file: PdfFile,
     password: Annotated[str | None, Form()] = None,
+    integrity_only: Annotated[bool, Form()] = False,
 ) -> SignaturesResponse:
-    """Check the embedded signatures against the server's trust roots."""
+    """Check the embedded signatures against the server's trust roots. An encrypted
+    file is checked as uploaded, decrypted with ``password``."""
     doc = await read_pdf(file, password)
     roots: list[bytes] = request.app.state.trust_roots
-    infos = await asyncio.to_thread(doc.verify_signatures, roots)
+    infos = await asyncio.to_thread(doc.verify_signatures, roots, password=password)
+    problems = signature_problems(infos, require_trust=not integrity_only)
     return SignaturesResponse(
-        signatures=[SignatureOut(**asdict(info), ok=info.ok) for info in infos]
+        ok=not problems,
+        problems=problems,
+        signatures=[SignatureOut(**asdict(info), ok=info.ok) for info in infos],
     )

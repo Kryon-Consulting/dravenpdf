@@ -6,7 +6,12 @@ from importlib.metadata import PackageNotFoundError, version
 
 from dravenpdf.document import PdfDocument
 from dravenpdf.document.forms import FormField
-from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
+from dravenpdf.document.signing import (
+    SignatureBox,
+    SignatureInfo,
+    SigningKey,
+    signature_problems,
+)
 from dravenpdf.errors import (
     AssetError,
     BlockedRequestError,
@@ -68,4 +73,5 @@ __all__ = [
     "TemplateError",
     "Viewport",
     "__version__",
+    "signature_problems",
 ]

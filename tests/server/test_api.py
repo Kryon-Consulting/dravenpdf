@@ -755,9 +755,59 @@ def test_sign_and_verify_endpoints(signing_client: TestClient) -> None:
     assert [k["name"] for k in keys] == ["company"]
     assert "Server Signer" in keys[0]["subject"]
     assert signed.status_code == 200, signed.text
-    (info,) = checked.json()["signatures"]
-    assert info["ok"]  # intact, valid, trusted by the configured roots, whole document
+    body = checked.json()
+    (info,) = body["signatures"]
+    assert info["ok"]  # intact, valid, trusted by the configured roots
     assert info["reason"] == "Approved"
+    assert body["ok"]  # the document: signed, all ok, one covering the whole file
+    assert body["problems"] == []
+
+
+def test_verify_untrusted_and_integrity_only(signing_client: TestClient) -> None:
+    from dravenpdf import PdfDocument, SigningKey
+    from signing_fixture import make_p12
+
+    key = SigningKey.from_pkcs12(make_p12("Stranger", "pw")[0], "pw")
+    signed = PdfDocument.from_bytes(pdf_bytes()).sign(key).to_bytes()
+
+    def verify(**data: str) -> dict[str, object]:
+        response = signing_client.post(
+            "/v1/pdf/verify", files={"file": ("s.pdf", signed)}, data=data, headers=AUTH
+        )
+        assert response.status_code == 200, response.text
+        return response.json()  # type: ignore[no-any-return]
+
+    strict, lenient = verify(), verify(integrity_only="true")
+    unsigned = signing_client.post(
+        "/v1/pdf/verify", files={"file": upload(pdf_bytes())}, headers=AUTH
+    ).json()
+
+    assert (strict["ok"], strict["problems"]) == (False, ["Signature: the signer is not trusted"])
+    assert (lenient["ok"], lenient["problems"]) == (True, [])
+    assert (unsigned["ok"], unsigned["problems"]) == (False, ["the file has no signatures"])
+
+
+def test_verify_encrypted_signed_file(signing_client: TestClient) -> None:
+    from dravenpdf import SigningKey
+    from signing_fixture import USER, encrypted_then_signed, make_p12
+
+    data = encrypted_then_signed(SigningKey.from_pkcs12(make_p12("Enc", "pw")[0], "pw"))
+
+    checked = signing_client.post(
+        "/v1/pdf/verify",
+        files={"file": ("e.pdf", data)},
+        data={"password": USER, "integrity_only": "true"},
+        headers=AUTH,
+    )
+    wrong = signing_client.post(
+        "/v1/pdf/verify", files={"file": ("e.pdf", data)}, data={"password": "nope"}, headers=AUTH
+    )
+
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["ok"]
+    assert checked.json()["signatures"][0]["intact"]
+    assert wrong.status_code == 422
+    assert wrong.json()["error"]["code"] == "pdf_password"
 
 
 @pytest.mark.parametrize(

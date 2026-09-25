@@ -74,4 +74,10 @@ headers) are stripped from logs and errors.
   carrying signatures that verify as broken or a visible "signature" that isn't one.
 - **CLI `verify` is strict:** it exits 1 unless the file is signed, every signature is
   intact and trusted by a `--trust` root, and a signature covers the whole file.
-  `--integrity-only` drops the trust requirement.
+  `--integrity-only` drops the trust requirement. HTTP `verify` reports the same rule
+  as a document-level `ok` and `problems` (with `integrity_only`); both use
+  `signature_problems()`. A signature's own `ok` means intact, valid and trusted;
+  coverage is a separate fact, so earlier signatures of a multi-signed file are ok.
+- **Encrypted signed files verify as they are.** Verification reads the original
+  bytes, and pyHanko decrypts them with the password passed to the verify call (not
+  kept on the document). Writing is a separate path and still removes signatures.

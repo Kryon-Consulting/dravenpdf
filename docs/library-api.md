@@ -224,10 +224,19 @@ signed = doc.sign(
 )
 signed.save("signed.pdf")
 
-for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
+signatures = PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes])
+for sig in signatures:
     sig.field, sig.signer, sig.signed_at, sig.reason, sig.location
     sig.intact, sig.valid, sig.trusted, sig.covers_whole_document, sig.timestamped
-    sig.ok        # all of the above that matter: intact, valid, trusted, whole document
+    sig.ok        # this signature: intact, valid and trusted
+
+from dravenpdf import signature_problems
+signature_problems(signatures)         # the document: [] if its signatures vouch for it
+signature_problems(signatures, require_trust=False)   # integrity only
+
+# A file that was encrypted when signed: pass the password to verify it as it is.
+doc = PdfDocument.open("enc-signed.pdf", password=pw)
+doc.verify_signatures([ca_pem_bytes], password=pw)    # the password isn't kept
 ```
 
 - PAdES baseline signatures via pyHanko. These are **advanced** electronic signatures;
@@ -246,6 +255,17 @@ for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
   longer covers the whole document, which `verify_signatures` reports.
 - `trusted` only counts the trust roots you pass (PEM or DER); the operating system's
   certificate store is never used.
+- `ok` judges one signature: intact, valid and trusted. It no longer requires
+  `covers_whole_document` (it did before), so the earlier signature of a file signed
+  twice is ok; coverage stays a separate fact. To judge the document, use
+  `signature_problems()`: at least one signature, every one intact, valid and trusted
+  (unless `require_trust=False`), and at least one covering the whole file, which
+  catches unsigned changes appended after the last signature. CLI and HTTP `verify`
+  use the same rule.
+- `verify_signatures` checks the exact bytes the document was read from. For an
+  encrypted file, pyHanko decrypts while reading (user or owner `password`, passed
+  again because it isn't kept), so signatures made on the encrypted file verify.
+  Writing the opened document still removes them: opening decrypted it.
 
 ### Passwords and encryption
 
@@ -377,7 +397,8 @@ dravenpdf sign        in.pdf -o out.pdf --key company.p12 [--reason] [--location
                       # key passphrase: env DRAVENPDF_KEY_PASSWORD or prompt
 dravenpdf verify      in.pdf [--trust ca.pem ...] [--integrity-only]
                       # JSON; exit 1 unless signed, intact, trusted by --trust and covering
-                      # the whole file; --integrity-only skips the trust check
+                      # the whole file; --integrity-only skips the trust check;
+                      # encrypted file: password in env DRAVENPDF_PDF_PASSWORD (or --password)
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds

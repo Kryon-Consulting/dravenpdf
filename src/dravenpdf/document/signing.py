@@ -24,6 +24,7 @@ from pathlib import Path
 import pikepdf
 from asn1crypto import x509 as asn1_x509
 from pydantic import SecretStr
+from pyhanko.pdf_utils.crypt import AuthStatus
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers, timestamps
@@ -32,7 +33,7 @@ from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import SignatureCoverageLevel
 from pyhanko_certvalidator import ValidationContext
 
-from dravenpdf.errors import SigningError
+from dravenpdf.errors import PdfPasswordError, SigningError
 
 
 def _drop_traceback(record: logging.LogRecord) -> bool:
@@ -243,8 +244,35 @@ class SignatureInfo:
 
     @property
     def ok(self) -> bool:
-        """Intact, valid, trusted and covering the whole document."""
-        return self.intact and self.valid and self.trusted and self.covers_whole_document
+        """Intact, valid and trusted.
+
+        Says nothing about later changes: an earlier signature in a file signed twice
+        is ok, though it doesn't cover the whole document. Use
+        :func:`signature_problems` to judge the document as a whole.
+        """
+        return self.intact and self.valid and self.trusted
+
+
+def signature_problems(
+    signatures: Sequence[SignatureInfo], *, require_trust: bool = True
+) -> list[str]:
+    """Why a document's signatures don't vouch for it; empty if they do.
+
+    The rule: at least one signature, every one intact, valid and (unless
+    ``require_trust`` is False) trusted, and at least one covering the whole file, so
+    nothing was appended after the last signature. The CLI and HTTP ``verify`` use it.
+    """
+    if not signatures:
+        return ["the file has no signatures"]
+    problems = []
+    for info in signatures:
+        if not (info.intact and info.valid):
+            problems.append(f"{info.field}: the signature is broken")
+        elif require_trust and not info.trusted:
+            problems.append(f"{info.field}: the signer is not trusted")
+    if not any(info.covers_whole_document for info in signatures):
+        problems.append("the file was changed after its last signature")
+    return problems
 
 
 def sign(
@@ -323,10 +351,31 @@ def load_certificates(pem_or_der: Iterable[bytes]) -> list[asn1_x509.Certificate
     return certificates
 
 
-def verify(data: bytes, trust_roots: Sequence[asn1_x509.Certificate] = ()) -> list[SignatureInfo]:
-    """Check every embedded signature. Without trust roots, ``trusted`` is False."""
+def verify(
+    data: bytes,
+    trust_roots: Sequence[asn1_x509.Certificate] = (),
+    *,
+    password: str | SecretStr | None = None,
+) -> list[SignatureInfo]:
+    """Check every embedded signature. Without trust roots, ``trusted`` is False.
+
+    An encrypted file is decrypted by pyHanko's reader (with ``password``, the user or
+    owner password) and checked as it is: nothing is rewritten.
+    """
     try:
         reader = PdfFileReader(io.BytesIO(data))
+    except Exception as exc:
+        raise SigningError(f"could not read the signatures: {str(exc)[:300]}") from exc
+    if reader.encrypted:
+        secret = _plain(password) or ""
+        try:
+            auth = reader.decrypt(secret).status
+        except Exception:
+            auth = AuthStatus.FAILED
+        if auth == AuthStatus.FAILED:
+            message = "wrong password for this PDF" if secret else "this PDF needs a password"
+            raise PdfPasswordError(message) from None  # no chaining: keep secrets out
+    try:
         embedded = list(reader.embedded_signatures)
     except Exception as exc:
         raise SigningError(f"could not read the signatures: {str(exc)[:300]}") from exc
@@ -339,7 +388,7 @@ def verify(data: bytes, trust_roots: Sequence[asn1_x509.Certificate] = ()) -> li
         sig_dict = signature.sig_object
         results.append(
             SignatureInfo(
-                field=signature.field_name,
+                field=str(signature.field_name),  # a proxy object in encrypted files
                 signer=str(status.signing_cert.subject.human_friendly),
                 signed_at=status.signer_reported_dt,
                 intact=bool(status.intact),

@@ -123,4 +123,7 @@ class SignatureOut(BaseModel):
 
 
 class SignaturesResponse(BaseModel):
+    ok: bool
+    """The document as a whole: see ``signing.signature_problems``."""
+    problems: list[str]
     signatures: list[SignatureOut]

@@ -19,7 +19,7 @@ from dravenpdf import __version__
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.document.signing import SignatureBox, SigningKey
+from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import BlockedRequestError, DravenPdfError, PdfPasswordError
 from dravenpdf.options import (
@@ -524,24 +524,26 @@ def verify(
             help="Only check that the signatures are intact; don't require a trusted signer.",
         ),
     ] = False,
+    password: Annotated[
+        str | None,
+        typer.Option(
+            envvar="DRAVENPDF_PDF_PASSWORD",
+            help="Password of an encrypted file (env DRAVENPDF_PDF_PASSWORD).",
+        ),
+    ] = None,
 ) -> None:
     """Check signatures; prints JSON. Exits with 1 unless the file is signed, every
     signature is intact and trusted by a --trust root, and a signature covers the whole
-    file (no unsigned changes after the last one)."""
+    file (no unsigned changes after the last one). Encrypted files are checked as they
+    are, with --password."""
     roots = [p.read_bytes() for p in trust or []]
-    infos = PdfDocument.open(input).verify_signatures(roots)
-    typer.echo(json.dumps([asdict(i) for i in infos], indent=2, default=str))
-    problems = [] if infos else ["the file has no signatures"]
-    for info in infos:
-        if not (info.intact and info.valid):
-            problems.append(f"{info.field}: the signature is broken")
-        elif not info.trusted and not integrity_only:
-            hint = "" if roots else "; pass --trust CA.pem, or use --integrity-only"
-            problems.append(f"{info.field}: signer not trusted{hint}")
-    if infos and not any(info.covers_whole_document for info in infos):
-        problems.append("the file was changed after its last signature")
+    infos = PdfDocument.open(input, password=password).verify_signatures(roots, password=password)
+    typer.echo(json.dumps([asdict(i) | {"ok": i.ok} for i in infos], indent=2, default=str))
+    problems = signature_problems(infos, require_trust=not integrity_only)
     for problem in problems:
         typer.echo(problem, err=True)
+    if any("not trusted" in p for p in problems) and not roots:
+        typer.echo("hint: pass --trust CA.pem, or use --integrity-only", err=True)
     if problems:
         raise typer.Exit(1)
 

@@ -97,6 +97,9 @@ class PdfDocument:
         # The exact bytes this document was read from, while it is unmodified: written
         # back as-is, so signatures and incremental updates survive.
         self._source: bytes | None = None
+        # The bytes this document was read from, encrypted or not: what
+        # verify_signatures() checks. Never written out (see _source for that).
+        self._original: bytes | None = None
         self.render_report: RenderReport | None = None
         """Set on documents returned by a renderer: what failed while rendering.
         Documents derived from this one (rotate, merge, ...) don't carry it."""
@@ -120,6 +123,7 @@ class PdfDocument:
             raise InvalidPdfError(f"not a readable PDF: {exc}") from exc
         doc = cls(pdf)
         doc.was_encrypted = pdf.is_encrypted
+        doc._original = data
         if not pdf.is_encrypted:  # opening decrypts, so encrypted input is rewritten
             doc._source = data
         return doc
@@ -457,10 +461,19 @@ class PdfDocument:
         )  # fmt: skip
         return PdfDocument.from_bytes(signed)
 
-    def verify_signatures(self, trust_roots: Iterable[bytes] = ()) -> list[SignatureInfo]:
+    def verify_signatures(
+        self, trust_roots: Iterable[bytes] = (), *, password: str | SecretStr | None = None
+    ) -> list[SignatureInfo]:
         """Check each embedded signature. ``trust_roots`` are PEM or DER certificates
-        (e.g. your CA); without them no signature counts as ``trusted``."""
-        return sign_ops.verify(self._readable_bytes(), sign_ops.load_certificates(trust_roots))
+        (e.g. your CA); without them no signature counts as ``trusted``.
+
+        Checks the exact bytes the document was read from. For a file that was
+        encrypted, pass its ``password`` again (it isn't kept): pyHanko decrypts it
+        while reading, so signatures made on the encrypted file verify.
+        """
+        data = self._original if self._original is not None else self._readable_bytes()
+        roots = sign_ops.load_certificates(trust_roots)
+        return sign_ops.verify(data, roots, password=password)
 
     # ------------------------------------------------------------------ encryption
 
@@ -546,6 +559,7 @@ class PdfDocument:
         """An independent copy; an unchanged file stays byte for byte the same."""
         doc = self._derive(ops.clone(self._pdf))
         doc._source = self._source
+        doc._original = self._original
         doc.was_encrypted = self.was_encrypted
         return doc
 
