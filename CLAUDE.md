@@ -45,7 +45,10 @@ Update that file (and the status line in `README.md`) as milestones land.
 3. **No PDF/A and no Ghostscript** (AGPL). Do not add Ghostscript as a dependency.
 4. HTTP auth is a **single API key** in the `X-API-Key` header.
 5. The HTTP API is **synchronous**: the response body is the result. No job queue.
-6. **Out of scope for now:** digital signatures, form filling, encryption and passwords.
+6. **Signing keys live on the server** (configured files or key services); requests name
+   a key and never upload private keys. Signatures are advanced electronic signatures;
+   EU *qualified* signatures (eIDAS, certified signing hardware) are not a goal.
+7. **Forms:** fill and flatten existing PDF forms only; no creating fillable forms from HTML.
 
 Full reasoning is in `docs/decisions.md`.
 

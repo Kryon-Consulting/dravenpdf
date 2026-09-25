@@ -27,7 +27,7 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **HTTP service** (FastAPI) with API key auth, concurrency limits and Prometheus metrics
 - **Safe by default:** a fresh browser context per render, SSRF protection, sandboxed templates
 
-Not included yet: digital signatures, form filling, encryption, PDF/A.
+Not included yet: digital signatures, form filling, encryption (in progress, see the roadmap), PDF/A.
 
 ## Installation
 
