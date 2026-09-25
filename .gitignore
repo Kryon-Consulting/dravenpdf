@@ -50,6 +50,7 @@ tests/visual/__diff__/
 /playwright-report/
 /test-results/
 /playwright/.cache/
+/.worktrees/
 
 # Logs and runtime files
 logs/
