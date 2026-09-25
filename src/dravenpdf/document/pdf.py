@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import secrets
+import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from os import PathLike
 from pathlib import Path
@@ -16,12 +17,20 @@ from pydantic import SecretStr
 from dravenpdf.document import forms as form_ops
 from dravenpdf.document import images as image_ops
 from dravenpdf.document import pages as ops
+from dravenpdf.document import signing as sign_ops
 from dravenpdf.document import stamp as stamp_ops
 from dravenpdf.document import text as text_ops
 from dravenpdf.document.forms import FieldValue, FormField
 from dravenpdf.document.images import ImageFormat
+from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
 from dravenpdf.document.stamp import Position
-from dravenpdf.errors import InvalidPdfError, PdfOperationError, PdfPasswordError
+from dravenpdf.errors import (
+    InvalidPdfError,
+    PdfOperationError,
+    PdfPasswordError,
+    SignatureInvalidatedWarning,
+    SigningError,
+)
 from dravenpdf.options import Margins, PaperSize, RenderOptions
 
 if TYPE_CHECKING:
@@ -48,6 +57,24 @@ METADATA_KEYS: dict[str, str] = {
     "mod_date": "/ModDate",
 }
 _EDITABLE = ("title", "author", "subject", "keywords", "creator", "producer")
+
+
+def _has_signature_values(pdf: pikepdf.Pdf) -> bool:
+    """Any signature field that has been signed (cheap check, no validation)."""
+    acroform = pdf.Root.get("/AcroForm")
+    if not isinstance(acroform, pikepdf.Dictionary):
+        return False
+    pending = list(acroform.get("/Fields", []))
+    seen = 0
+    while pending and seen < 10_000:
+        seen += 1
+        field = pending.pop()
+        if not isinstance(field, pikepdf.Dictionary):
+            continue
+        if field.get("/FT") == pikepdf.Name.Sig and "/V" in field:
+            return True
+        pending.extend(field.get("/Kids", []))
+    return False
 
 
 def _plain(value: str | SecretStr) -> str:
@@ -78,6 +105,10 @@ class PdfDocument:
         self._encryption: pikepdf.Encryption | None = None
         self.was_encrypted = False
         """True if this document was opened from a password-protected file."""
+        # The exact bytes this document was read from, while it is unmodified: written
+        # back as-is, so signatures and incremental updates survive.
+        self._source: bytes | None = None
+        self._signed = False
         self.render_report: RenderReport | None = None
         """Set on documents returned by a renderer: what failed while rendering.
         Documents derived from this one (rotate, merge, ...) don't carry it."""
@@ -101,6 +132,9 @@ class PdfDocument:
             raise InvalidPdfError(f"not a readable PDF: {exc}") from exc
         doc = cls(pdf)
         doc.was_encrypted = pdf.is_encrypted
+        if not pdf.is_encrypted:  # opening decrypts, so encrypted input is rewritten
+            doc._source = data
+            doc._signed = _has_signature_values(pdf)
         return doc
 
     @classmethod
@@ -393,6 +427,45 @@ class PdfDocument:
         form_ops.flatten_form(result)
         return self._derive(result)
 
+    # ------------------------------------------------------------------ signatures
+
+    @property
+    def is_signed(self) -> bool:
+        """True if the file this document was read from has filled signature fields."""
+        return self._signed
+
+    def sign(
+        self,
+        key: SigningKey,
+        *,
+        field_name: str = "Signature",
+        reason: str | None = None,
+        location: str | None = None,
+        contact: str | None = None,
+        box: SignatureBox | None = None,
+        timestamp_url: str | None = None,
+    ) -> PdfDocument:
+        """Digitally sign (PAdES). Returns the signed document; write it with
+        ``to_bytes()`` / ``save()`` and don't change it afterwards, since any change
+        writes a new file and invalidates the signature. ``box`` makes the signature
+        visible; ``timestamp_url`` adds an RFC 3161 timestamp. Sign last: after
+        filling, stamping and so on, and without pending encryption."""
+        if self._encryption is not None:
+            raise SigningError(
+                "can't sign a document with pending encryption: encrypting after signing "
+                "would rewrite the file; sign an unencrypted document"
+            )
+        signed = sign_ops.sign(
+            self.to_bytes(), key, field_name=field_name, reason=reason, location=location,
+            contact=contact, box=box, timestamp_url=timestamp_url,
+        )  # fmt: skip
+        return PdfDocument.from_bytes(signed)
+
+    def verify_signatures(self, trust_roots: Iterable[bytes] = ()) -> list[SignatureInfo]:
+        """Check each embedded signature. ``trust_roots`` are PEM or DER certificates
+        (e.g. your CA); without them no signature counts as ``trusted``."""
+        return sign_ops.verify(self.to_bytes(), sign_ops.load_certificates(trust_roots))
+
     # ------------------------------------------------------------------ encryption
 
     def encrypt(
@@ -446,6 +519,13 @@ class PdfDocument:
 
     def _derive(self, pdf: pikepdf.Pdf) -> PdfDocument:
         """A document made from this one: keeps its pending encryption."""
+        if self._signed:
+            warnings.warn(
+                "this document is digitally signed; the change writes a new file, "
+                "which invalidates its signatures",
+                SignatureInvalidatedWarning,
+                stacklevel=3,
+            )
         doc = PdfDocument(pdf)
         doc._encryption = self._encryption
         return doc
@@ -458,10 +538,20 @@ class PdfDocument:
     def to_bytes(self, *, compress: bool = False) -> bytes:
         """Serialize to PDF bytes.
 
-        Uncompressed streams are always compressed. ``compress=True`` also drops
-        unused page resources, recompresses existing streams at the highest level
-        and packs objects into object streams, which pays off on larger documents.
+        A document that was read and not changed is returned byte for byte, so
+        digital signatures stay valid. Otherwise the file is written anew, with
+        uncompressed streams compressed. ``compress=True`` also drops unused page
+        resources, recompresses streams at the highest level and packs objects into
+        object streams, which pays off on larger documents (and rewrites the file).
         """
+        if self._source is not None and self._encryption is None and not compress:
+            return self._source
+        if compress and self._signed:
+            warnings.warn(
+                "compressing rewrites the file, which invalidates its signatures",
+                SignatureInvalidatedWarning,
+                stacklevel=2,
+            )
         buffer = io.BytesIO()
         encryption: pikepdf.Encryption | bool = self._encryption or False
         if compress:

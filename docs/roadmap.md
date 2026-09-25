@@ -56,9 +56,9 @@ From the feature review (in the order they were built):
   `POST /v1/render/url`. This also fixed the guard forwarding the first URL's cookies
   to a cross-origin redirect target (see D11).
 
-## M8 – Encryption, forms, signatures ◐
-Decided in D12. Order: encryption and passwords ☑, then form filling and flattening ☑,
-then digital signatures (keys configured on the server) and verification ☐.
+## M8 – Encryption, forms, signatures ☑
+Decided in D12: encryption and passwords, form filling and flattening, digital
+signatures with keys configured on the server, and verification.
 
 ## Later / out of scope for now
 - PDF/A (would need Ghostscript, which is AGPL; see D5)

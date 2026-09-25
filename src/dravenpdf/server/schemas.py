@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -95,3 +96,31 @@ class FormFieldOut(BaseModel):
 
 class FormFieldsResponse(BaseModel):
     fields: list[FormFieldOut]
+
+
+class SigningKeyOut(BaseModel):
+    name: str
+    subject: str
+    not_after: datetime
+
+
+class SigningKeysResponse(BaseModel):
+    keys: list[SigningKeyOut]
+
+
+class SignatureOut(BaseModel):
+    field: str
+    signer: str
+    signed_at: datetime | None
+    intact: bool
+    valid: bool
+    trusted: bool
+    covers_whole_document: bool
+    timestamped: bool
+    reason: str | None
+    location: str | None
+    ok: bool
+
+
+class SignaturesResponse(BaseModel):
+    signatures: list[SignatureOut]

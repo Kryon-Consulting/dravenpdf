@@ -23,6 +23,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "unsupported_media_type": 415,
     "invalid_pdf": 422,
     "pdf_password": 422,
+    "signing_failed": 422,
     "limit_exceeded": 422,
     "blocked_request": 422,
     "render_failed": 422,

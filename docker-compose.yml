@@ -10,4 +10,8 @@ services:
       DRAVENPDF_MAX_CONCURRENCY: "4"
       DRAVENPDF_WORKERS: "1"
       # DRAVENPDF_ALLOWED_HOSTS: "cdn.example.com,*.example.org"
+      # Signing keys stay on the server (mount them read-only):
+      # DRAVENPDF_SIGNING_KEYS: '{"company": {"pkcs12": "/keys/company.p12", "password_file": "/run/secrets/company"}}'
+      # DRAVENPDF_TIMESTAMP_URL: "https://tsa.example/"
+      # DRAVENPDF_TRUST_ROOTS: "/keys/ca.pem"
     restart: unless-stopped

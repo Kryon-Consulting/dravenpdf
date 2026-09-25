@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +22,7 @@ from dravenpdf import (
     RenderError,
     RenderReport,
     RenderTimeoutError,
+    SigningError,
     TemplateError,
 )
 from dravenpdf.server import deps
@@ -438,7 +441,7 @@ def test_text(client: TestClient) -> None:
 def test_openapi_lists_every_endpoint(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    assert len([p for p in paths if p.startswith("/v1/")]) == 21
+    assert len([p for p in paths if p.startswith("/v1/")]) == 24
 
 
 def test_split_holds_one_part_at_a_time(
@@ -709,3 +712,104 @@ def test_form_fill_errors(client: TestClient, values: str, status: int, message:
 
     assert response.status_code == status
     assert message in response.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------- signatures
+
+
+@pytest.fixture
+def signing_client(fake: FakeRenderer, tmp_path: Path) -> Iterator[TestClient]:
+    from signing_fixture import make_p12
+
+    p12, pem = make_p12("Server Signer", "k3y-pass")
+    (tmp_path / "company.p12").write_bytes(p12)
+    (tmp_path / "company.pass").write_text("k3y-pass\n")
+    (tmp_path / "roots.pem").write_bytes(pem)
+    settings = Settings(
+        api_key=API_KEY,
+        signing_keys={
+            "company": {
+                "pkcs12": str(tmp_path / "company.p12"),
+                "password_file": str(tmp_path / "company.pass"),
+            }
+        },
+        trust_roots=str(tmp_path / "roots.pem"),
+    )
+    with make_client(settings, fake) as c:
+        yield c
+
+
+def test_sign_and_verify_endpoints(signing_client: TestClient) -> None:
+    keys = signing_client.get("/v1/pdf/signing-keys", headers=AUTH).json()["keys"]
+    signed = signing_client.post(
+        "/v1/pdf/sign",
+        files={"file": upload(pdf_bytes(2))},
+        data={"key": "company", "reason": "Approved", "page": "2", "x": "50", "y": "50",
+              "width": "200", "height": "60"},
+        headers=AUTH,
+    )  # fmt: skip
+    checked = signing_client.post(
+        "/v1/pdf/verify", files={"file": ("s.pdf", signed.content)}, headers=AUTH
+    )
+
+    assert [k["name"] for k in keys] == ["company"]
+    assert "Server Signer" in keys[0]["subject"]
+    assert signed.status_code == 200, signed.text
+    (info,) = checked.json()["signatures"]
+    assert info["ok"]  # intact, valid, trusted by the configured roots, whole document
+    assert info["reason"] == "Approved"
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"key": "nope"}, "unknown signing key"),
+        ({"key": "company", "page": "1"}, "needs page, x, y, width and height"),
+        ({"key": "company", "timestamp": "true"}, "no timestamp server"),
+        ({"key": "company", "page": "9", "x": "1", "y": "1", "width": "9", "height": "9"},
+         "past the last page"),
+    ],
+)  # fmt: skip
+def test_sign_errors(signing_client: TestClient, data: dict[str, str], message: str) -> None:
+    response = signing_client.post(
+        "/v1/pdf/sign", files={"file": upload(pdf_bytes())}, data=data, headers=AUTH
+    )
+
+    assert response.status_code == 400
+    assert message in response.json()["error"]["message"]
+
+
+def test_sign_without_configured_keys(client: TestClient) -> None:
+    response = client.post(
+        "/v1/pdf/sign", files={"file": upload(pdf_bytes())}, data={"key": "x"}, headers=AUTH
+    )
+
+    assert response.status_code == 400
+    assert "not configured" in response.json()["error"]["message"]
+
+
+def test_bad_signing_key_stops_startup(tmp_path: Path) -> None:
+    from dravenpdf.server.app import create_app
+    from signing_fixture import make_p12
+
+    (tmp_path / "k.p12").write_bytes(make_p12("X", "right-pass")[0])
+    settings = Settings(
+        api_key=API_KEY,
+        signing_keys={"k": {"pkcs12": str(tmp_path / "k.p12"), "password": "wrong-pass"}},
+    )
+
+    with pytest.raises(SigningError, match="signing key 'k'") as info:
+        create_app(settings)
+    assert "wrong-pass" not in str(info.value)
+    assert "wrong-pass" not in repr(settings)
+
+
+def test_signing_keys_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DRAVENPDF_API_KEY", "k")
+    monkeypatch.setenv(
+        "DRAVENPDF_SIGNING_KEYS", '{"a": {"pkcs12": "/keys/a.p12", "password_file": "/s/a"}}'
+    )
+
+    settings = Settings()
+
+    assert str(settings.signing_keys["a"].pkcs12) == "/keys/a.p12"

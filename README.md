@@ -30,7 +30,9 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **Passwords:** open protected PDFs, encrypt with AES-256 and permissions, decrypt
 - **Forms:** list fields, fill text, checkboxes, radio buttons and dropdowns, flatten
 
-Not included yet: digital signatures (in progress, see the roadmap), PDF/A.
+- **Digital signatures:** sign with server-side keys (visible or invisible, optional timestamp), verify
+
+Not included: PDF/A, EU qualified signatures, creating fillable forms from HTML.
 
 ## Installation
 

@@ -95,6 +95,16 @@ class LimitExceededError(PdfOperationError):
     code = "limit_exceeded"
 
 
+class SigningError(DravenPdfError):
+    """Signing or reading signatures failed (bad key file, unreadable signature...)."""
+
+    code = "signing_failed"
+
+
+class SignatureInvalidatedWarning(UserWarning):
+    """An operation on a signed document writes a new file, so its signatures break."""
+
+
 class PoolExhaustedError(DravenPdfError):
     """Too many renders are already waiting for a browser slot."""
 
@@ -113,5 +123,7 @@ __all__ = [
     "PoolExhaustedError",
     "RenderError",
     "RenderTimeoutError",
+    "SignatureInvalidatedWarning",
+    "SigningError",
     "TemplateError",
 ]

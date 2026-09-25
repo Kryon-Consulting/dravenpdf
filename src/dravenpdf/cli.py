@@ -19,6 +19,7 @@ from dravenpdf import __version__
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
+from dravenpdf.document.signing import SignatureBox, SigningKey
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import BlockedRequestError, DravenPdfError, PdfPasswordError
 from dravenpdf.options import (
@@ -461,6 +462,70 @@ def fill_form(
 def flatten_form(input: InputPdf, output: Output) -> None:
     """Burn the current field values into the pages and remove the form."""
     _write_pdf(PdfDocument.open(input).flatten_form(), output)
+
+
+@app.command()
+def sign(
+    input: InputPdf,
+    output: Output,
+    key: Annotated[
+        Path, typer.Option(exists=True, dir_okay=False, help="PKCS#12 (.p12 / .pfx) key file.")
+    ],
+    key_password: Annotated[
+        str,
+        typer.Option(
+            envvar="DRAVENPDF_KEY_PASSWORD",
+            prompt=True,
+            hide_input=True,
+            prompt_required=False,
+            help="Key passphrase (env DRAVENPDF_KEY_PASSWORD, else prompted).",
+        ),
+    ] = "",
+    reason: Annotated[str | None, typer.Option(help="Why it is signed.")] = None,
+    location: Annotated[str | None, typer.Option(help="Where it is signed.")] = None,
+    contact: Annotated[str | None, typer.Option(help="Signer contact.")] = None,
+    field_name: Annotated[str, typer.Option(help="Signature field name.")] = "Signature",
+    visible: Annotated[
+        str | None,
+        typer.Option(help="Visible signature: PAGE,X,Y,WIDTH,HEIGHT (1-based page, points)."),
+    ] = None,
+    timestamp_url: Annotated[
+        str | None, typer.Option(help="RFC 3161 timestamp server URL.")
+    ] = None,
+) -> None:
+    """Digitally sign a PDF. Sign last: any later change breaks the signature."""
+    box = None
+    if visible is not None:
+        parts = visible.split(",")
+        try:
+            page, x, y, width, height = (float(p) for p in parts)
+        except ValueError:
+            _fail("--visible must be PAGE,X,Y,WIDTH,HEIGHT, e.g. 1,50,50,200,60")
+        box = SignatureBox(page=int(page) - 1, x=x, y=y, width=width, height=height)
+    signing_key = SigningKey.from_pkcs12(key, key_password or None)
+    doc = PdfDocument.open(input).sign(
+        signing_key, field_name=field_name, reason=reason, location=location,
+        contact=contact, box=box, timestamp_url=timestamp_url,
+    )  # fmt: skip
+    _write_pdf(doc, output)
+
+
+@app.command()
+def verify(
+    input: InputPdf,
+    trust: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, dir_okay=False, help="Trusted CA certificate(s), PEM/DER."),
+    ] = None,
+) -> None:
+    """Check signatures; prints JSON. Exits with 1 if any signature is broken, or if
+    --trust is given and a signer isn't trusted."""
+    roots = [p.read_bytes() for p in trust or []]
+    infos = PdfDocument.open(input).verify_signatures(roots)
+    typer.echo(json.dumps([asdict(i) for i in infos], indent=2, default=str))
+    broken = [i for i in infos if not (i.intact and i.valid) or (roots and not i.trusted)]
+    if broken:
+        raise typer.Exit(1)
 
 
 @app.command()

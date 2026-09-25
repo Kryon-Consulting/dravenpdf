@@ -210,6 +210,37 @@ filled.flatten_form()              # burn the values into the pages, remove the 
 - Page operations (`extract`, `split`, `merge`, ...) keep form fields; merging two
   copies of a form renames the second copy's fields.
 
+### Digital signatures
+
+```python
+from dravenpdf import SigningKey, SignatureBox
+
+key = SigningKey.from_pkcs12("company.p12", password)    # .p12 / .pfx, or bytes
+signed = doc.sign(
+    key,
+    reason="Approved", location="Berlin", contact=None,
+    box=SignatureBox(page=0, x=50, y=50, width=200, height=60),   # omit for invisible
+    timestamp_url="https://tsa.example/",                          # optional RFC 3161
+)
+signed.save("signed.pdf")
+
+for sig in PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes]):
+    sig.field, sig.signer, sig.signed_at, sig.reason, sig.location
+    sig.intact, sig.valid, sig.trusted, sig.covers_whole_document, sig.timestamped
+    sig.ok        # all of the above that matter: intact, valid, trusted, whole document
+```
+
+- PAdES baseline signatures via pyHanko. These are **advanced** electronic signatures;
+  EU *qualified* signatures (eIDAS) are out of scope.
+- **Sign last.** Signing appends to the file's exact bytes. A document read from a
+  file and not changed is written back byte for byte, so its signatures stay valid;
+  any operation on a signed document writes a new file and emits
+  `SignatureInvalidatedWarning`. Pending encryption blocks signing (`SigningError`).
+- A second signature goes into a new field (`Signature2`, ...); the first then no
+  longer covers the whole document, which `verify_signatures` reports.
+- `trusted` only counts the trust roots you pass (PEM or DER); the operating system's
+  certificate store is never used.
+
 ### Passwords and encryption
 
 ```python
@@ -335,6 +366,10 @@ dravenpdf encrypt     in.pdf -o out.pdf [--no-print] [--no-copy] [--no-modify] [
                       # passwords: env DRAVENPDF_USER_PASSWORD / DRAVENPDF_OWNER_PASSWORD
                       # (or --user-password / --owner-password, visible in the process list)
 dravenpdf decrypt     in.pdf -o out.pdf        # password: env DRAVENPDF_PDF_PASSWORD or prompt
+dravenpdf sign        in.pdf -o out.pdf --key company.p12 [--reason] [--location] [--contact]
+                      [--visible PAGE,X,Y,W,H] [--timestamp-url URL]
+                      # key passphrase: env DRAVENPDF_KEY_PASSWORD or prompt
+dravenpdf verify      in.pdf [--trust ca.pem ...]    # JSON; exit 1 if broken / untrusted
 dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
 dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
 dravenpdf text        in.pdf                          # pages separated by form feeds
