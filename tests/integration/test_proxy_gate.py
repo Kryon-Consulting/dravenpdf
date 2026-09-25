@@ -318,6 +318,9 @@ async def test_reused_https_connection_sends_zero_bytes_while_held(tmp_path: Pat
         ):
             page = await context.new_page()
             await page.goto(origin + "/first")
+            before = tuple(bytes(wire) for wire in wires)
+            connection_count = len(wires)
+            assert connection_count == 1
             # Fetch avoids navigation cancellation replacing the connection.
             pending = asyncio.create_task(
                 page.evaluate("""() => fetch('/hold', {
@@ -330,15 +333,14 @@ async def test_reused_https_connection_sends_zero_bytes_while_held(tmp_path: Pat
                 assert len(seen) == 2
                 assert seen[0]["client"] == seen[1]["client"]
                 assert seen[0]["server"] == seen[1]["server"]
-                assert len(wires) == 1
-                before = bytes(wires[0])
-                assert b"/hold" not in before
+                assert len(wires) == connection_count
+                assert tuple(bytes(wire) for wire in wires) == before
                 process.kill()
                 await process.wait()
                 with pytest.raises(PlaywrightError):
                     await asyncio.wait_for(pending, 10)
-                assert bytes(wires[0]) == before
-                assert len(wires) == 1
+                assert len(wires) == connection_count
+                assert tuple(bytes(wire) for wire in wires) == before
             finally:
                 if not pending.done():
                     pending.cancel()
