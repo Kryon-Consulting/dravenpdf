@@ -99,10 +99,16 @@ DravenPdfError
   Playwright's download). An `asyncio.Semaphore` caps concurrent renders (`max_concurrency`) and
   a bounded wait (`max_queue`) raises `PoolExhaustedError` when too many renders
   are waiting. It relaunches Chromium if it disconnects, and can recycle the
-  browser after N renders to limit memory growth.
+  browser after N renders to limit memory growth. A launch runs as one shared
+  background task that callers only wait on (`asyncio.shield`): a render whose
+  deadline passes stops waiting, but the launch finishes and serves the next render,
+  so no half-launched Chromium is leaked and concurrent callers never launch twice.
+  Context creation is shielded the same way; a context that arrives after its caller
+  gave up is closed.
 - **`renderer.py` – `AsyncRenderer`**: `from_html`, `from_url`, `from_file`,
-  `from_template`. One deadline (`timeout_ms`) covers the whole call, including the
-  wait for a slot. Each call: take a pool slot → create a new context →
+  `from_template`. One deadline (`timeout_ms`) covers the whole call: the wait for a
+  slot, launching Chromium if needed, creating the context and page, loading, waiting
+  and printing. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
 - **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
@@ -134,8 +140,11 @@ exposes chainable methods that each return a **new** `PdfDocument` (inputs are n
 modified). pikepdf copies pages from another PDF lazily and needs the source to stay
 open until the copy is saved, so operations that assemble pages from other PDFs
 save-and-reopen their result (`pages._detach`) before returning it.
-- **`pages.py`**: `merge`, `split(every=n | ranges=[...])`, `extract`, `rotate`,
-  `delete`, `reorder`, `insert`.
+- **`pages.py`**: `merge`, `extract`, `rotate`, `delete`, `reorder`, `insert`, and
+  splitting in two steps: `plan_split` validates and returns each part's page indices
+  (plain integers), then `iter_parts` builds the parts lazily, one at a time.
+  `PdfDocument.iter_split` and the split endpoint use this so only one part is in
+  memory at once (the endpoint serializes each part in the ZIP worker thread).
 - **`stamp.py`**: every stamp (text, image, a page of another PDF, rendered HTML) is a
   Form XObject drawn in the page's *displayed* coordinates, then placed with one
   matrix that undoes `/Rotate` and the MediaBox offset, so stamps stay upright on

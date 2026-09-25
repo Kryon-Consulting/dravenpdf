@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import Protocol
@@ -17,7 +17,7 @@ from dravenpdf.document import stamp as stamp_ops
 from dravenpdf.document import text as text_ops
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.stamp import Position
-from dravenpdf.errors import InvalidPdfError, PdfOperationError
+from dravenpdf.errors import InvalidPdfError
 from dravenpdf.options import Margins, PaperSize, RenderOptions
 
 
@@ -137,15 +137,26 @@ class PdfDocument:
     def split(
         self, *, every: int | None = None, ranges: Sequence[str] | None = None
     ) -> list[PdfDocument]:
-        """Split into chunks of ``every`` pages, or one document per range string."""
-        if (every is None) == (ranges is None):
-            raise PdfOperationError("pass exactly one of every= or ranges=")
-        if every is not None:
-            parts = ops.split_every(self._pdf, every)
-        else:
-            assert ranges is not None
-            parts = ops.split_ranges(self._pdf, ranges)
-        return [PdfDocument(p) for p in parts]
+        """Split into chunks of ``every`` pages, or one document per range string.
+
+        Holds every part in memory; use :meth:`iter_split` for large splits.
+        """
+        return list(self.iter_split(every=every, ranges=ranges))
+
+    def iter_split(
+        self, *, every: int | None = None, ranges: Sequence[str] | None = None
+    ) -> Iterator[PdfDocument]:
+        """Like :meth:`split`, but builds each part only when it is asked for.
+
+        Arguments are checked immediately (bad ones raise here, not mid-iteration);
+        the parts are then built lazily, so a caller that saves and drops each one
+        holds a single part at a time. Don't use this document from another thread
+        while iterating.
+        """
+        plan = ops.plan_split(self.page_count, every=every, ranges=ranges)
+        # map() rather than a generator expression: it keeps no reference to the
+        # previous part while the next one is built.
+        return map(PdfDocument, ops.iter_parts(self._pdf, plan))
 
     def rotate(self, degrees: int, pages: Iterable[int] | None = None) -> PdfDocument:
         """Rotate clockwise by a multiple of 90 degrees; all pages unless ``pages`` given."""

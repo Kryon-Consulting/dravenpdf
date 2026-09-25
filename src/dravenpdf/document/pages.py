@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 
 import pikepdf
 
@@ -112,22 +112,34 @@ def extract(pdf: pikepdf.Pdf, ranges: str) -> pikepdf.Pdf:
     return _from_pages(pdf, parse_page_ranges(ranges, len(pdf.pages)))
 
 
-def split_every(pdf: pikepdf.Pdf, every: int) -> list[pikepdf.Pdf]:
-    """Chunks of ``every`` pages (the last chunk may be shorter)."""
-    if every < 1:
-        raise PdfOperationError("every must be at least 1")
-    count = len(pdf.pages)
-    return [
-        _from_pages(pdf, range(start, min(start + every, count)))
-        for start in range(0, count, every)
-    ]
+def plan_split(
+    page_count: int, *, every: int | None = None, ranges: Sequence[str] | None = None
+) -> list[list[int]]:
+    """The 0-based page indices of each part: chunks of ``every`` pages (the last may
+    be shorter), or one part per 1-based range string such as ``["1-3", "4-"]``.
 
-
-def split_ranges(pdf: pikepdf.Pdf, ranges: Sequence[str]) -> list[pikepdf.Pdf]:
-    """One PDF per range string, e.g. ``["1-3", "4-"]``."""
+    Validates everything up front and touches no PDF data, so bad arguments fail
+    before any part is built.
+    """
+    if (every is None) == (ranges is None):
+        raise PdfOperationError("pass exactly one of every= or ranges=")
+    if every is not None:
+        if every < 1:
+            raise PdfOperationError("every must be at least 1")
+        return [
+            list(range(start, min(start + every, page_count)))
+            for start in range(0, page_count, every)
+        ]
+    assert ranges is not None
     if not ranges:
         raise PdfOperationError("no ranges given")
-    return [extract(pdf, spec) for spec in ranges]
+    return [parse_page_ranges(spec, page_count) for spec in ranges]
+
+
+def iter_parts(pdf: pikepdf.Pdf, plan: Iterable[Sequence[int]]) -> Iterator[pikepdf.Pdf]:
+    """Build the parts of ``plan`` one at a time, so only one is in memory at once."""
+    for indices in plan:
+        yield _from_pages(pdf, indices)
 
 
 def rotate(pdf: pikepdf.Pdf, degrees: int, pages: Iterable[int] | None = None) -> pikepdf.Pdf:

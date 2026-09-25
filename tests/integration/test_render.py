@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from conftest import SVG, Server, page_size, pdf_text
 from dravenpdf import (
     AsyncRenderer,
     BlockedRequestError,
+    BrowserPool,
     HeaderFooter,
     Margins,
     PoolExhaustedError,
@@ -319,6 +321,34 @@ async def test_recovers_after_browser_crash() -> None:
 
         assert "after crash" in pdf_text(doc)[0]
         assert r.pool.restarts == 1
+
+
+class _SlowLaunchPool(BrowserPool):
+    delay = 0.0
+
+    async def _launch_browser(self, playwright: Any) -> Any:
+        await asyncio.sleep(self.delay)
+        return await super()._launch_browser(playwright)
+
+
+async def test_deadline_covers_a_slow_browser_launch() -> None:
+    pool = _SlowLaunchPool()
+    async with pool, AsyncRenderer(pool=pool) as r:
+        await r.from_html("<p>warm up</p>")
+        slot = pool._current
+        assert slot is not None
+        await slot.browser.close()  # the next render has to relaunch Chromium
+        pool.delay = 3.0
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+
+        with pytest.raises(RenderTimeoutError):
+            await r.from_html("<p>x</p>", RenderOptions(timeout_ms=500))
+
+        assert loop.time() - started < 1.5
+        doc = await r.from_html("<p>after</p>")  # reuses the launch that kept going
+        assert "after" in pdf_text(doc)[0]
+        assert pool.launches == 2
 
 
 # ---------------------------------------------------------------- sync wrapper

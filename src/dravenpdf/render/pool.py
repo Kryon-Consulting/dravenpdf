@@ -71,7 +71,7 @@ class BrowserPool:
         self._executable_path = executable_path or os.environ.get(CHROMIUM_PATH_ENV) or None
         self._launch_args = list(launch_args)
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._launch_lock = asyncio.Lock()
+        self._launching: asyncio.Task[_Slot] | None = None
         self._playwright: Playwright | None = None
         self._current: _Slot | None = None
         self._retired: list[_Slot] = []
@@ -109,6 +109,10 @@ class BrowserPool:
             raise
 
     async def close(self) -> None:
+        if self._launching is not None:
+            # Let an in-flight launch finish so its browser is closed below, not leaked.
+            with suppress(Exception):
+                await asyncio.shield(self._launching)
         slots = [s for s in (self._current, *self._retired) if s is not None]
         self._current = None
         self._retired.clear()
@@ -132,12 +136,19 @@ class BrowserPool:
     # ------------------------------------------------------------------ browser
 
     async def _ensure_browser(self) -> _Slot:
-        async with self._launch_lock:
-            if self._playwright is None:
-                raise RenderError("the browser pool is not running; call start() first")
-            slot = self._current
-            if slot is not None and slot.browser.is_connected() and not slot.retired:
-                return slot
+        """The current browser, launching one if needed.
+
+        Launches run as one shared background task: callers only wait for it, so a
+        caller that gives up (its render deadline passed) doesn't cancel the launch.
+        The browser still starts and serves the next render instead of leaking a
+        half-launched Chromium, and concurrent callers never launch twice.
+        """
+        if self._playwright is None:
+            raise RenderError("the browser pool is not running; call start() first")
+        slot = self._current
+        if slot is not None and slot.browser.is_connected() and not slot.retired:
+            return slot
+        if self._launching is None:
             if slot is not None:
                 if slot.browser.is_connected():
                     logger.info("recycling Chromium after %d renders", slot.renders)
@@ -146,16 +157,31 @@ class BrowserPool:
                     self.restarts += 1
                 self._current = None
                 self._retire(slot)
-            try:
-                browser = await self._playwright.chromium.launch(
-                    executable_path=self._executable_path,
-                    args=self._launch_args,
-                )
-            except PlaywrightError as exc:
-                raise RenderError(f"could not launch Chromium: {exc.message}") from exc
-            self.launches += 1
-            self._current = _Slot(browser)
-            return self._current
+            task = asyncio.get_running_loop().create_task(self._launch())
+            task.add_done_callback(self._launch_done)
+            self._launching = task
+        return await asyncio.shield(self._launching)
+
+    async def _launch(self) -> _Slot:
+        assert self._playwright is not None
+        try:
+            browser = await self._launch_browser(self._playwright)
+        except PlaywrightError as exc:
+            raise RenderError(f"could not launch Chromium: {exc.message}") from exc
+        self.launches += 1
+        self._current = _Slot(browser)
+        return self._current
+
+    async def _launch_browser(self, playwright: Playwright) -> Browser:
+        return await playwright.chromium.launch(
+            executable_path=self._executable_path,
+            args=self._launch_args,
+        )
+
+    def _launch_done(self, task: asyncio.Task[_Slot]) -> None:
+        self._launching = None
+        if not task.cancelled():
+            task.exception()  # mark it retrieved even if every waiter gave up
 
     def _retire(self, slot: _Slot) -> None:
         slot.retired = True
@@ -175,7 +201,29 @@ class BrowserPool:
             await browser.close()
 
     async def _new_context(self, slot: _Slot, options: dict[str, Any]) -> BrowserContext:
-        return await slot.browser.new_context(**options)
+        """``browser.new_context()`` that can't leak a context when cancelled.
+
+        If the caller is cancelled (deadline) while Chromium is still creating the
+        context, the context is closed as soon as it arrives.
+        """
+        task = asyncio.get_running_loop().create_task(slot.browser.new_context(**options))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(self._close_orphan_context)
+            raise
+
+    def _close_orphan_context(self, task: asyncio.Task[BrowserContext]) -> None:
+        if task.cancelled() or task.exception() is not None:
+            return
+        closing = asyncio.get_running_loop().create_task(self._close_context(task.result()))
+        self._closing.add(closing)
+        closing.add_done_callback(self._closing.discard)
+
+    @staticmethod
+    async def _close_context(ctx: BrowserContext) -> None:
+        with suppress(PlaywrightError):
+            await ctx.close()
 
     # ------------------------------------------------------------------ contexts
 
@@ -185,9 +233,10 @@ class BrowserPool:
     ) -> AsyncIterator[BrowserContext]:
         """A new, isolated browser context; closed when the block exits.
 
-        ``deadline`` (event-loop time, as from ``loop.time()``) bounds the wait for a
-        free slot: past it, :class:`TimeoutError` is raised. Other keyword arguments
-        go to Playwright's ``browser.new_context()``.
+        ``deadline`` (event-loop time, as from ``loop.time()``) bounds everything
+        before the block runs: waiting for a free slot, launching Chromium if needed,
+        and creating the context. Past it, :class:`TimeoutError` is raised. Other
+        keyword arguments go to Playwright's ``browser.new_context()``.
         """
         if self._semaphore.locked() and self._waiting >= self.max_queue:
             raise PoolExhaustedError(
@@ -201,21 +250,8 @@ class BrowserPool:
             self._waiting -= 1
         self._active += 1
         try:
-            slot = await self._ensure_browser()
-            slot.active += 1  # reserve it before any await, so it can't be closed under us
-            try:
-                ctx = await self._new_context(slot, options)
-            except PlaywrightError:
-                self._release(slot, rendered=False)
-                if slot.browser.is_connected():
-                    raise
-                slot = await self._ensure_browser()  # it died just now; one retry
-                slot.active += 1
-                try:
-                    ctx = await self._new_context(slot, options)
-                except BaseException:
-                    self._release(slot, rendered=False)
-                    raise
+            async with asyncio.timeout_at(deadline):
+                slot, ctx = await self._open(options)
             try:
                 yield ctx
             finally:
@@ -225,6 +261,26 @@ class BrowserPool:
         finally:
             self._active -= 1
             self._semaphore.release()
+
+    async def _open(self, options: dict[str, Any]) -> tuple[_Slot, BrowserContext]:
+        """Reserve the current browser and open a context on it.
+
+        If the browser turns out to have just died, retries once on a new one. The
+        reservation is released on any failure, including cancellation.
+        """
+        for attempt in (1, 2):
+            slot = await self._ensure_browser()
+            slot.active += 1  # reserve it before any await, so it can't be closed under us
+            try:
+                return slot, await self._new_context(slot, options)
+            except PlaywrightError:
+                self._release(slot, rendered=False)
+                if attempt == 2 or slot.browser.is_connected():
+                    raise
+            except BaseException:
+                self._release(slot, rendered=False)
+                raise
+        raise AssertionError("unreachable")
 
     def _release(self, slot: _Slot, *, rendered: bool) -> None:
         slot.active -= 1

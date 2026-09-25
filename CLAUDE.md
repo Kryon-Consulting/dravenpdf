@@ -70,6 +70,11 @@ Full reasoning is in `docs/decisions.md`.
   server maps them to HTTP status codes in one place.
 - Every Playwright render uses a **new browser context** and must go through the
   request guard in `render/guards.py` (SSRF protection). Never bypass it.
+- Never `await` a Chromium launch or `new_context()` directly from a render: go
+  through `BrowserPool._ensure_browser()` / `_new_context()`, which shield them so a
+  render deadline can't leak a half-created browser or context.
+- Build many-part outputs lazily (`PdfDocument.iter_split`) and don't keep earlier
+  parts referenced; note that `enumerate()` holds its previous item (see the split route).
 - Don't replace the guard's `route.fetch(max_redirects=0)` loop with
   `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
   could redirect Chromium to an internal one unchecked (tests cover this).

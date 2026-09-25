@@ -42,7 +42,7 @@ development only). Keys are compared in constant time. `/healthz`, `/readyz`,
 - `options` is `RenderOptions` (see [library-api.md](library-api.md#renderoptions)):
   paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
   capped at `DRAVENPDF_RENDER_TIMEOUT_MS`. It covers the whole request, including
-  time spent waiting for a free browser.
+  time spent waiting for a free browser and (re)launching Chromium.
 - `template` is Jinja2 **source** (sandboxed, autoescaped). The service does not read
   template files from its own disk.
 - `post` is optional work on the result:
@@ -67,7 +67,7 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 | Endpoint | Fields | Response |
 |---|---|---|
 | `POST /v1/pdf/merge` | `files` (2+ PDFs, in order) | `application/pdf` |
-| `POST /v1/pdf/split` | `file`, and `every` or `ranges` (repeat the field once per part) | `application/zip` (`part-1.pdf`, ...) |
+| `POST /v1/pdf/split` | `file`, and `every` or `ranges` (repeat the field once per part) | `application/zip` (`part-1.pdf`, ...); parts are built one at a time |
 | `POST /v1/pdf/extract` | `file`, `ranges` | `application/pdf` |
 | `POST /v1/pdf/rotate` | `file`, `degrees` (default 90), `pages`? | `application/pdf` |
 | `POST /v1/pdf/delete` | `file`, `pages` | `application/pdf` |
@@ -121,7 +121,7 @@ lives in `src/dravenpdf/server/errors.py`.
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |
-| 504 | `render_timeout` | Render exceeded `timeout_ms` (time spent queued for a browser counts) |
+| 504 | `render_timeout` | Render exceeded `timeout_ms` (time queued for a browser or launching one counts) |
 | 500 | `internal_error` | Anything else; the message has the request ID, details are only in the log |
 
 ## Configuration (environment variables)

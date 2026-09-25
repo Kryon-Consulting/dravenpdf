@@ -48,7 +48,7 @@ with Renderer() as r:
 | `wait_until` | `"load" \| "domcontentloaded" \| "networkidle"` | `"networkidle"` | |
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
-| `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot |
+| `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot and launching Chromium |
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
 
@@ -65,6 +65,8 @@ doc.page_size(0)                                    # (width, height) in points,
 merged = PdfDocument.merge([doc_a, doc_b, pdf_bytes])   # metadata from the first
 parts  = doc.split(every=1)                         # list[PdfDocument]
 parts  = doc.split(ranges=["1-3", "4-"])
+for part in doc.iter_split(every=10):              # lazy: one part in memory at a time
+    part.save(...)                                  # (arguments are checked at the call)
 doc.extract("2-5,8")                                # new PdfDocument
 doc.insert(other_doc_or_bytes, at=1)                # before page index 1; at=page_count appends
 

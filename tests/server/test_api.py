@@ -435,3 +435,33 @@ def test_openapi_lists_every_endpoint(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
     assert len([p for p in paths if p.startswith("/v1/")]) == 15
+
+
+def test_split_holds_one_part_at_a_time(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from dravenpdf.document import pages
+
+    created: list[object] = []
+    still_held: list[int] = []
+    original = pages._from_pages
+
+    def tracked(source: object, indices: object) -> object:
+        # Before building a part, count earlier parts that something other than this
+        # list still references (the list, the loop variable and the call's own
+        # argument account for 3 references).
+        still_held.append(sum(1 for part in created if sys.getrefcount(part) > 3))
+        part = original(source, indices)  # type: ignore[arg-type]
+        created.append(part)
+        return part
+
+    monkeypatch.setattr(pages, "_from_pages", tracked)
+    response = client.post(
+        "/v1/pdf/split", files={"file": upload(pdf_bytes(6))}, data={"every": 1}, headers=AUTH
+    )
+
+    assert response.status_code == 200
+    assert len(zip_names(response.content)) == 6
+    assert still_held == [0] * 6
