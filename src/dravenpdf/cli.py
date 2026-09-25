@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -430,6 +431,36 @@ def metadata(
         _fail("give -o to write the changed copy")
     assert output is not None
     _write_pdf(doc.set_metadata(**changes), output)
+
+
+@app.command("form-fields")
+def form_fields(input: InputPdf) -> None:
+    """Print the form's fields as JSON."""
+    fields = PdfDocument.open(input).form_fields()
+    typer.echo(json.dumps([asdict(f) for f in fields], indent=2, ensure_ascii=False))
+
+
+@app.command("fill-form")
+def fill_form(
+    input: InputPdf,
+    output: Output,
+    data: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help='JSON object: {"field": value, ...}.'),
+    ],
+    flatten: Annotated[bool, typer.Option(help="Burn the values in and remove the form.")] = False,
+) -> None:
+    """Fill form fields (text, true/false for checkboxes, option names)."""
+    values = json.loads(data.read_text())
+    if not isinstance(values, dict):
+        _fail("--data must contain a JSON object")
+    _write_pdf(PdfDocument.open(input).fill_form(values, flatten=flatten), output)
+
+
+@app.command("flatten-form")
+def flatten_form(input: InputPdf, output: Output) -> None:
+    """Burn the current field values into the pages and remove the form."""
+    _write_pdf(PdfDocument.open(input).flatten_form(), output)
 
 
 @app.command()

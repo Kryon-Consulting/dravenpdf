@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from dravenpdf.document import PdfDocument
+from dravenpdf.document.forms import FormField
 from dravenpdf.errors import (
     AssetError,
     BlockedRequestError,
@@ -37,6 +38,7 @@ __all__ = [
     "Cookie",
     "DravenPdfError",
     "FailedRequest",
+    "FormField",
     "HeaderFooter",
     "HttpError",
     "IncompleteRenderError",

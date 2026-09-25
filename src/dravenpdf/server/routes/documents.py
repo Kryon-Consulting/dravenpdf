@@ -6,7 +6,9 @@ Page fields are 1-based strings like "1,3-5,8-".
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterator
+from dataclasses import asdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -27,6 +29,7 @@ from dravenpdf.server.deps import (
     zip_response,
 )
 from dravenpdf.server.errors import ApiError
+from dravenpdf.server.schemas import FormFieldOut, FormFieldsResponse
 
 router = APIRouter(prefix="/v1/pdf", tags=["pdf"], dependencies=[Depends(require_api_key)])
 
@@ -221,3 +224,45 @@ async def decrypt(
     """Remove password protection (needs the password)."""
     doc = await read_pdf(file, password)
     return await pdf_response(await asyncio.to_thread(doc.decrypt), "decrypted.pdf")
+
+
+@router.post("/form/fields")
+async def form_fields(
+    file: PdfFile, password: Annotated[str | None, Form()] = None
+) -> FormFieldsResponse:
+    """The PDF's form fields (empty list if it has no form)."""
+    doc = await read_pdf(file, password)
+    fields = await asyncio.to_thread(doc.form_fields)
+    return FormFieldsResponse(
+        fields=[FormFieldOut(**{**asdict(f), "options": list(f.options)}) for f in fields]
+    )
+
+
+@router.post("/form/fill", response_class=Response, responses=PDF_RESPONSE)
+async def form_fill(
+    file: PdfFile,
+    values: Annotated[
+        str, Form(description='JSON object: {"field name": "text" | true/false | "option"}')
+    ],
+    flatten: Annotated[bool, Form(description="Burn the values in and remove the form.")] = False,
+    password: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Fill form fields; all values are checked before any is applied."""
+    try:
+        parsed = json.loads(values)
+    except json.JSONDecodeError as exc:
+        raise ApiError("invalid_request", f"values: not valid JSON ({exc.msg})") from None
+    if not isinstance(parsed, dict) or not all(
+        isinstance(v, str | bool) or v is None for v in parsed.values()
+    ):
+        raise ApiError("invalid_request", "values: must be an object of text, true/false or null")
+    doc = await read_pdf(file, password)
+    result = await asyncio.to_thread(doc.fill_form, parsed, flatten=flatten)
+    return await pdf_response(result, "filled.pdf")
+
+
+@router.post("/form/flatten", response_class=Response, responses=PDF_RESPONSE)
+async def form_flatten(file: PdfFile, password: Annotated[str | None, Form()] = None) -> Response:
+    """Burn the current field values into the pages and remove the form."""
+    doc = await read_pdf(file, password)
+    return await pdf_response(await asyncio.to_thread(doc.flatten_form), "flattened.pdf")

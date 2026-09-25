@@ -438,7 +438,7 @@ def test_text(client: TestClient) -> None:
 def test_openapi_lists_every_endpoint(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    assert len([p for p in paths if p.startswith("/v1/")]) == 18
+    assert len([p for p in paths if p.startswith("/v1/")]) == 21
 
 
 def test_split_holds_one_part_at_a_time(
@@ -657,3 +657,55 @@ def test_encrypt_needs_a_password_or_restriction(client: TestClient) -> None:
     response = client.post("/v1/pdf/encrypt", files={"file": upload(pdf_bytes())}, headers=AUTH)
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------- forms
+
+
+def test_form_endpoints(client: TestClient) -> None:
+    import json as jsonlib
+
+    from forms_fixture import build_form
+
+    form = ("form.pdf", build_form(), "application/pdf")
+    listed = client.post("/v1/pdf/form/fields", files={"file": form}, headers=AUTH)
+    filled = client.post(
+        "/v1/pdf/form/fill",
+        files={"file": form},
+        data={"values": jsonlib.dumps({"name": "Ada", "agree": True, "size": "L"}),
+              "flatten": "true"},
+        headers=AUTH,
+    )  # fmt: skip
+    flattened = client.post("/v1/pdf/form/flatten", files={"file": form}, headers=AUTH)
+
+    names = {f["name"]: f for f in listed.json()["fields"]}
+    assert names["size"]["kind"] == "radio"
+    assert sorted(names["size"]["options"]) == ["L", "M", "S"]
+    assert filled.status_code == 200, filled.text
+    assert "Ada" in pdf_text(as_doc(filled.content))[0]
+    assert as_doc(filled.content).form_fields() == []
+    assert as_doc(flattened.content).form_fields() == []
+
+
+@pytest.mark.parametrize(
+    ("values", "status", "message"),
+    [
+        ("{nope", 400, "not valid JSON"),
+        ('["a"]', 400, "must be an object"),
+        ('{"name": {"x": 1}}', 400, "must be an object"),
+        ('{"size": "XL"}', 400, "needs one of its options"),
+        ('{"missing": "x"}', 400, "no such form field"),
+    ],
+)
+def test_form_fill_errors(client: TestClient, values: str, status: int, message: str) -> None:
+    from forms_fixture import build_form
+
+    response = client.post(
+        "/v1/pdf/form/fill",
+        files={"file": ("f.pdf", build_form(), "application/pdf")},
+        data={"values": values},
+        headers=AUTH,
+    )
+
+    assert response.status_code == status
+    assert message in response.json()["error"]["message"]

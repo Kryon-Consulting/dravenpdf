@@ -80,3 +80,18 @@ class RenderTemplateRequest(_RenderRequest):
 
 class TextResponse(BaseModel):
     pages: list[str]
+
+
+class FormFieldOut(BaseModel):
+    name: str
+    kind: str
+    value: str | bool | None
+    options: list[str]
+    read_only: bool
+    required: bool
+    multiline: bool
+    max_length: int | None
+
+
+class FormFieldsResponse(BaseModel):
+    fields: list[FormFieldOut]

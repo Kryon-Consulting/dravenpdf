@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import secrets
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Protocol
 import pikepdf
 from pydantic import SecretStr
 
+from dravenpdf.document import forms as form_ops
 from dravenpdf.document import images as image_ops
 from dravenpdf.document import pages as ops
 from dravenpdf.document import stamp as stamp_ops
 from dravenpdf.document import text as text_ops
+from dravenpdf.document.forms import FieldValue, FormField
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import InvalidPdfError, PdfOperationError, PdfPasswordError
@@ -369,6 +371,27 @@ class PdfDocument:
     def extract_text(self) -> list[str]:
         """Text of each page. Scanned pages have none (no OCR)."""
         return text_ops.extract_text(self.to_bytes())
+
+    # ------------------------------------------------------------------ forms
+
+    def form_fields(self) -> list[FormField]:
+        """The form's fields (empty if the PDF has no form)."""
+        return form_ops.list_fields(self._pdf)
+
+    def fill_form(self, values: Mapping[str, FieldValue], *, flatten: bool = False) -> PdfDocument:
+        """Fill form fields by name: text for text and choice fields, True/False for
+        checkboxes, an option name for radio groups. Everything is checked first, so
+        either all values apply or none (``PdfOperationError``). ``flatten=True`` also
+        burns the values into the pages and removes the form."""
+        result = ops.clone(self._pdf)
+        form_ops.fill(result, values, flatten=flatten)
+        return self._derive(result)
+
+    def flatten_form(self) -> PdfDocument:
+        """Burn the current field values into the pages and remove the form."""
+        result = ops.clone(self._pdf)
+        form_ops.flatten_form(result)
+        return self._derive(result)
 
     # ------------------------------------------------------------------ encryption
 

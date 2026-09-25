@@ -179,10 +179,36 @@ Page numbers in Python arguments are **0-based**. Range strings (`"1-3,5,8-"`) a
 **1-based**, matching how people write page ranges; `"8-"` means page 8 to the end.
 
 Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
-`insert`) keep document info (title, author, ...) but not bookmarks, and the tag
+`insert`) keep document info (title, author, ...) and form fields but not bookmarks, and the tag
 structure of a `tagged` PDF won't match the new pages. `rotate`, `delete`,
 `set_metadata` and `copy` keep everything. Render with `tagged`/`outline` last if the
 result must stay accessible.
+
+### Forms
+
+```python
+doc.form_fields()        # [FormField(name, kind, value, options, read_only, required, multiline, max_length)]
+filled = doc.fill_form({
+    "name": "Ada Lovelace",        # text / multiline text
+    "agree": True,                 # checkbox: True / False
+    "size": "M",                   # radio group: one of its options
+    "country": "Japan",            # dropdown / list: one of its options
+}, flatten=False)
+filled.flatten_form()              # burn the values into the pages, remove the form
+```
+
+- Everything is checked before anything changes (unknown or read-only fields, bad
+  options, `MaxLen`, line breaks in single-line fields): a fill applies fully or not
+  at all (`PdfOperationError`).
+- Appearances are drawn for Western European (cp1252) text. Other scripts are stored
+  and drawn by the viewer (`NeedAppearances`), which Acrobat and browsers do, but such
+  values can't be flattened; `flatten=True` refuses them.
+- Hybrid XFA forms are filled through their AcroForm fields (the XFA part is removed);
+  XFA-only forms are refused. Signature fields and buttons can't be filled.
+- Flattening also draws other annotations that have an appearance (comments,
+  highlights) into the page.
+- Page operations (`extract`, `split`, `merge`, ...) keep form fields; merging two
+  copies of a form renames the second copy's fields.
 
 ### Passwords and encryption
 
@@ -302,6 +328,9 @@ dravenpdf stamp       in.pdf -o out.pdf (--text DRAFT | --image logo.png | --htm
 dravenpdf metadata    in.pdf                          # show info as JSON
 dravenpdf metadata    in.pdf --title "Q3" -o out.pdf  # write a changed copy
 dravenpdf compress    in.pdf -o out.pdf
+dravenpdf form-fields in.pdf                   # JSON
+dravenpdf fill-form   in.pdf --data values.json [--flatten] -o out.pdf
+dravenpdf flatten-form in.pdf -o out.pdf
 dravenpdf encrypt     in.pdf -o out.pdf [--no-print] [--no-copy] [--no-modify] [--no-annotate] [--no-forms]
                       # passwords: env DRAVENPDF_USER_PASSWORD / DRAVENPDF_OWNER_PASSWORD
                       # (or --user-password / --owner-password, visible in the process list)

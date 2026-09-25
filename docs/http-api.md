@@ -106,6 +106,9 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 | `POST /v1/pdf/stamp` | `file`, exactly one of `text` / `image` (file) / `html`; `opacity`?, `angle`?, `font_size`?, `color`?, `width`?, `position`?, `margin`?, `under`?, `pages`? | `application/pdf` |
 | `POST /v1/pdf/metadata` | `file`, `title`?, `author`?, `subject`?, `keywords`? (`""` removes) | `application/pdf` |
 | `POST /v1/pdf/compress` | `file` | `application/pdf` |
+| `POST /v1/pdf/form/fields` | `file`, `password`? | `application/json`: `{"fields": [{name, kind, value, options, read_only, required, multiline, max_length}]}` |
+| `POST /v1/pdf/form/fill` | `file`, `values` (JSON object: text, true/false or an option per field name), `flatten`?, `password`? | `application/pdf` |
+| `POST /v1/pdf/form/flatten` | `file`, `password`? | `application/pdf` |
 | `POST /v1/pdf/encrypt` | `file`, `user_password`?, `owner_password`? (random if omitted), `password`? (if the input is already protected), `allow_print`/`allow_copy`/`allow_modify`/`allow_annotate`/`allow_forms`? | `application/pdf` (AES-256) |
 | `POST /v1/pdf/decrypt` | `file`, `password` | `application/pdf` |
 

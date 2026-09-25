@@ -28,8 +28,9 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **Safe by default:** a fresh browser context per render, SSRF protection, sandboxed templates
 
 - **Passwords:** open protected PDFs, encrypt with AES-256 and permissions, decrypt
+- **Forms:** list fields, fill text, checkboxes, radio buttons and dropdowns, flatten
 
-Not included yet: digital signatures and form filling (in progress, see the roadmap), PDF/A.
+Not included yet: digital signatures (in progress, see the roadmap), PDF/A.
 
 ## Installation
 
