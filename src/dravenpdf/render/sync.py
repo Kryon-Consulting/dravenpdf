@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Coroutine, Mapping
+from collections.abc import Coroutine, Iterable, Mapping
 from os import PathLike
 from typing import Any, TypeVar
 
@@ -116,5 +116,22 @@ class Renderer:
         return self._run(
             self._async().from_template(
                 template, data, options, template_dir=template_dir, base_url=base_url
+            )
+        )
+
+    def stamp_html(
+        self,
+        document: PdfDocument,
+        html: str,
+        *,
+        opacity: float = 1.0,
+        pages: Iterable[int] | None = None,
+        under: bool = False,
+        base_url: str | None = None,
+    ) -> PdfDocument:
+        """Sync form of ``await document.stamp_html(async_renderer, html, ...)``."""
+        return self._run(
+            document.stamp_html(
+                self._async(), html, opacity=opacity, pages=pages, under=under, base_url=base_url
             )
         )

@@ -1,16 +1,33 @@
-# HTTP API (planned)
+# HTTP API
 
-The service is the `[server]` extra: `pip install "dravenpdf[server]"`.
+The service is the `[server]` extra: `pip install "dravenpdf[server]"`. Run it with
+`dravenpdf serve` or the Docker image. Interactive docs are at `/docs` and the
+OpenAPI schema at `/openapi.json`.
+
 It is **synchronous**: each response body is the result (a PDF, ZIP or JSON).
 There is no job queue.
+
+## Running
+
+```bash
+DRAVENPDF_API_KEY=change-me dravenpdf serve --host 0.0.0.0 --port 8000 --workers 2
+
+docker build -t dravenpdf .
+docker run --init -p 8000:8000 -e DRAVENPDF_API_KEY=change-me dravenpdf
+```
+
+Each worker process runs its own Chromium. Size `--workers` (Docker:
+`DRAVENPDF_WORKERS`) and `DRAVENPDF_MAX_CONCURRENCY` to the memory you have,
+roughly 100–300 MB per concurrent render. Use `--init` (or `init: true` in Compose)
+so Chromium's child processes are reaped.
 
 ## Auth
 
 Every `/v1/*` request must send the header `X-API-Key: <key>`. The key comes
 from `DRAVENPDF_API_KEY`. If that variable is unset the server **refuses to
 start**, unless `DRAVENPDF_AUTH_DISABLED=true` is set explicitly (for local
-development only). Keys are compared in constant time. `/healthz`, `/readyz`
-and `/metrics` do not need a key.
+development only). Keys are compared in constant time. `/healthz`, `/readyz`,
+`/metrics`, `/docs` and `/openapi.json` do not need a key.
 
 ## Endpoints
 
@@ -18,40 +35,57 @@ and `/metrics` do not need a key.
 
 | Endpoint | Body | Response |
 |---|---|---|
-| `POST /v1/render/html` | `{"html": str, "base_url"?: str, "options"?: RenderOptions, "post"?: PostProcess}` | `application/pdf` |
-| `POST /v1/render/url` | `{"url": str, "options"?: RenderOptions, "post"?: PostProcess}` | `application/pdf` |
-| `POST /v1/render/template` | `{"template": str, "data": object, "options"?: RenderOptions, "post"?: PostProcess}` | `application/pdf` |
+| `POST /v1/render/html` | `{"html", "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
+| `POST /v1/render/url` | `{"url", "options"?, "post"?, "filename"?}` | `application/pdf` |
+| `POST /v1/render/template` | `{"template", "data"?, "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
 
-`PostProcess` is optional work to do after rendering:
-`{"stamp_text"?: {...}, "metadata"?: {...}, "compress"?: bool}`.
-
-Example:
+- `options` is `RenderOptions` (see [library-api.md](library-api.md#renderoptions)):
+  paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
+  capped at `DRAVENPDF_RENDER_TIMEOUT_MS`.
+- `template` is Jinja2 **source** (sandboxed, autoescaped). The service does not read
+  template files from its own disk.
+- `post` is optional work on the result:
+  `{"stamp_text"?: {"text", "font_size", "color", "opacity", "angle", "position", "margin"},
+  "metadata"?: {"title", "author", "subject", "keywords"}, "compress"?: bool}`.
+- `filename` (default `document.pdf`) sets `Content-Disposition`; unsafe characters
+  are replaced.
+- Unknown fields are rejected (400), which catches typos.
 
 ```bash
 curl -X POST http://localhost:8000/v1/render/html \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"html":"<h1>Hello</h1>","options":{"paper":"A4","landscape":false}}' \
+  -d '{"html":"<h1>Hello</h1>","options":{"paper":"A4","landscape":false},
+       "post":{"stamp_text":{"text":"DRAFT"}}}' \
   -o hello.pdf
 ```
 
 ### PDF operations (multipart/form-data)
 
+Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
+
 | Endpoint | Fields | Response |
 |---|---|---|
 | `POST /v1/pdf/merge` | `files` (2+ PDFs, in order) | `application/pdf` |
-| `POST /v1/pdf/split` | `file`, `every` or `ranges` | `application/zip` |
+| `POST /v1/pdf/split` | `file`, and `every` or `ranges` (repeat the field once per part) | `application/zip` (`part-1.pdf`, ...) |
 | `POST /v1/pdf/extract` | `file`, `ranges` | `application/pdf` |
-| `POST /v1/pdf/rotate` | `file`, `degrees`, `pages`? | `application/pdf` |
-| `POST /v1/pdf/stamp` | `file`, one of `text` / `image` / `html`, `opacity`?, `angle`?, `position`?, `pages`? | `application/pdf` |
-| `POST /v1/pdf/metadata` | `file`, `title`?, `author`?, `subject`?, `keywords`? | `application/pdf` |
+| `POST /v1/pdf/rotate` | `file`, `degrees` (default 90), `pages`? | `application/pdf` |
+| `POST /v1/pdf/delete` | `file`, `pages` | `application/pdf` |
+| `POST /v1/pdf/reorder` | `file`, `order` (every page once, e.g. `3,1,2`) | `application/pdf` |
+| `POST /v1/pdf/stamp` | `file`, exactly one of `text` / `image` (file) / `html`; `opacity`?, `angle`?, `font_size`?, `color`?, `width`?, `position`?, `margin`?, `under`?, `pages`? | `application/pdf` |
+| `POST /v1/pdf/metadata` | `file`, `title`?, `author`?, `subject`?, `keywords`? (`""` removes) | `application/pdf` |
 | `POST /v1/pdf/compress` | `file` | `application/pdf` |
+
+```bash
+curl -X POST http://localhost:8000/v1/pdf/merge -H "X-API-Key: $KEY" \
+  -F files=@a.pdf -F files=@b.pdf -o merged.pdf
+```
 
 ### Conversion (multipart/form-data)
 
 | Endpoint | Fields | Response |
 |---|---|---|
-| `POST /v1/convert/images-to-pdf` | `files` (PNG/JPEG), `paper`? | `application/pdf` |
-| `POST /v1/convert/pdf-to-images` | `file`, `dpi`?, `format`? (`png`/`jpeg`) | `application/zip` |
+| `POST /v1/convert/images-to-pdf` | `files` (PNG/JPEG/...), `paper`?, `landscape`?, `margin`? | `application/pdf` |
+| `POST /v1/convert/pdf-to-images` | `file`, `dpi`? (10–600), `format`? (`png`/`jpeg`), `pages`? | `application/zip` (`page-1.png`, ...) |
 | `POST /v1/convert/text` | `file` | `application/json`: `{"pages": [str, ...]}` |
 
 ### Operations
@@ -59,25 +93,30 @@ curl -X POST http://localhost:8000/v1/render/html \
 | Endpoint | Purpose |
 |---|---|
 | `GET /healthz` | The process is up |
-| `GET /readyz` | The browser pool is running and has capacity |
-| `GET /metrics` | Prometheus: render duration, queue depth, active renders, browser restarts, errors by type |
+| `GET /readyz` | 200 when the browser pool is running and not saturated, else 503 |
+| `GET /metrics` | Prometheus: `dravenpdf_render_seconds{source}`, `dravenpdf_renders_active`, `dravenpdf_renders_waiting`, `dravenpdf_renders_total`, `dravenpdf_browser_launches_total`, `dravenpdf_browser_restarts_total` |
+
+Every response has an `X-Request-ID` header (the client's own, if it sent one), and
+every request is logged with it.
 
 ## Errors
 
-Error responses are JSON: `{"error": {"code": str, "message": str}}`.
+Error responses are JSON: `{"error": {"code": str, "message": str}}`. The mapping
+lives in `src/dravenpdf/server/errors.py`.
 
 | Status | `code` | When |
 |---|---|---|
-| 400 | `invalid_request` | Validation error, bad page range |
+| 400 | `invalid_request` | Validation error, bad page range, bad stamp arguments |
+| 400 | `invalid_template` | Template can't be parsed or rendered |
 | 401 | `unauthorized` | Missing or wrong API key |
-| 413 | `payload_too_large` | Body or upload exceeds the limit |
-| 415 | `unsupported_media_type` | Not a PDF or image where one is needed |
-| 400 | `invalid_template` | Template can't be found, parsed or rendered |
-| 422 | `invalid_pdf` | The uploaded file can't be parsed as a PDF |
-| 422 | `blocked_request` | URL or a sub-resource was blocked by the SSRF guard |
+| 413 | `payload_too_large` | Body larger than `DRAVENPDF_MAX_BODY_MB` (with or without Content-Length) |
+| 415 | `unsupported_media_type` | An upload that should be a PDF isn't one |
+| 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
+| 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
+| 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |
 | 504 | `render_timeout` | Render exceeded `timeout_ms` |
-| 500 | `internal_error` | Anything else (logged with a request ID) |
+| 500 | `internal_error` | Anything else; the message has the request ID, details are only in the log |
 
 ## Configuration (environment variables)
 
@@ -87,8 +126,10 @@ Error responses are JSON: `{"error": {"code": str, "message": str}}`.
 | `DRAVENPDF_AUTH_DISABLED` | `false` | Local development only |
 | `DRAVENPDF_MAX_CONCURRENCY` | `4` | Concurrent renders per worker |
 | `DRAVENPDF_MAX_QUEUE` | `16` | Renders waiting before a 503 |
-| `DRAVENPDF_RENDER_TIMEOUT_MS` | `30000` | Upper limit; the request's `timeout_ms` can't exceed it |
+| `DRAVENPDF_RENDER_TIMEOUT_MS` | `30000` | Upper limit; a request's `timeout_ms` is capped at it |
 | `DRAVENPDF_MAX_BODY_MB` | `25` | Request and upload size limit |
-| `DRAVENPDF_ALLOWED_HOSTS` | – | Comma-separated host allowlist for URL rendering and sub-resources. Unset = any public host |
+| `DRAVENPDF_ALLOWED_HOSTS` | – | Comma-separated host allowlist for URLs and sub-resources (`*.example.com` allowed). Unset = any public host |
 | `DRAVENPDF_BROWSER_RECYCLE_AFTER` | `500` | Restart Chromium after N renders |
 | `DRAVENPDF_LOG_LEVEL` | `INFO` | |
+| `DRAVENPDF_CHROMIUM_PATH` | – | Use this Chromium binary instead of Playwright's |
+| `DRAVENPDF_WORKERS` | `1` | Docker image only: worker processes |

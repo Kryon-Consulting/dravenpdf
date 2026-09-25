@@ -1,4 +1,4 @@
-.PHONY: install browser lint format typecheck test test-all check
+.PHONY: install browser lint format typecheck test test-all check serve docker
 
 install:
 	uv sync --all-extras
@@ -24,3 +24,9 @@ test-all:
 	uv run pytest
 
 check: lint typecheck test
+
+serve:
+	DRAVENPDF_API_KEY=$${DRAVENPDF_API_KEY:-dev} uv run dravenpdf serve
+
+docker:
+	docker build -t dravenpdf .

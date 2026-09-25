@@ -141,14 +141,32 @@ All exceptions subclass `dravenpdf.errors.DravenPdfError`. See
 
 ## CLI
 
+`dravenpdf --help` and `dravenpdf COMMAND --help` list every option. Page arguments
+are **1-based** (`1,3-5,8-`). `-o -` writes a single PDF to stdout. Library errors
+print one line (`error: ...`) and exit with status 1.
+
 ```
-dravenpdf render   INPUT(.html|URL) -o out.pdf [--paper A4] [--landscape] [--footer FILE]
-dravenpdf template TEMPLATE --data data.json -o out.pdf
-dravenpdf merge    a.pdf b.pdf -o out.pdf
-dravenpdf split    in.pdf --every 1 -o outdir/
-dravenpdf rotate   in.pdf --degrees 90 --pages 1,3 -o out.pdf
-dravenpdf stamp    in.pdf --text DRAFT | --image logo.png | --html stamp.html -o out.pdf
-dravenpdf images   in.pdf --dpi 150 -o outdir/
-dravenpdf text     in.pdf
-dravenpdf serve    [--host 0.0.0.0] [--port 8000] [--workers 2]   # needs [server]
+dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--margin 10mm]
+                      [--header h.html] [--footer f.html] [--wait-for "#ready"]
+                      [--wait-for-ready-flag] [--media print|screen] [--timeout 30]
+                      [--allow-host cdn.example.com ...] [--allow-private] [--skip-blocked]
+                      [--compress]
+dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
+dravenpdf merge       a.pdf b.pdf ... -o out.pdf
+dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)
+dravenpdf extract     in.pdf 2-5,8 -o out.pdf
+dravenpdf rotate      in.pdf -o out.pdf [--degrees 90] [--pages 1,3]
+dravenpdf delete      in.pdf 1,3 -o out.pdf
+dravenpdf stamp       in.pdf -o out.pdf (--text DRAFT | --image logo.png | --html s.html | --pdf letterhead.pdf)
+                      [--opacity] [--angle] [--font-size] [--color] [--width] [--position] [--under] [--pages]
+dravenpdf metadata    in.pdf                          # show info as JSON
+dravenpdf metadata    in.pdf --title "Q3" -o out.pdf  # write a changed copy
+dravenpdf compress    in.pdf -o out.pdf
+dravenpdf images      in.pdf -o outdir/ [--dpi 150] [--format png|jpeg] [--pages]
+dravenpdf from-images a.png b.jpg -o out.pdf [--paper A4] [--landscape] [--margin 36]
+dravenpdf text        in.pdf                          # pages separated by form feeds
+dravenpdf serve       [--host 127.0.0.1] [--port 8000] [--workers 1]   # needs [server]
 ```
+
+`render` blocks private and localhost addresses like the library does; pass
+`--allow-private` to render a local dev server.

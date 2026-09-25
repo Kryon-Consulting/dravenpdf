@@ -24,15 +24,19 @@ Also `insert`, `copy`, `page_size`, and 1-based range strings with open ends (`"
 Text/image/HTML stamps, images ↔ PDF, text extraction, Jinja2 `from_template`.
 Also `overlay` (a page of another PDF as letterhead or background) and `TemplateError`.
 
-## M5 – CLI ☐
-Typer commands listed in `library-api.md`.
+## M5 – CLI ☑
+Typer commands listed in `library-api.md`, plus `delete`, `metadata`, `compress`,
+`from-images`, `stamp --pdf`, and `python -m dravenpdf`.
 
-## M6 – HTTP service ☐
+## M6 – HTTP service ☑
 FastAPI app, API key auth, settings, all `/v1` endpoints, error mapping,
-health and metrics, server tests.
+health and metrics, server tests. Also `/v1/pdf/delete` and `/v1/pdf/reorder`,
+request IDs, streamed-body size limit, and post-processing on render endpoints.
 
-## M7 – Packaging and deployment ☐
-Dockerfile, docker-compose, visual tests, README usage examples, first release.
+## M7 – Packaging and deployment ◐
+Done: Dockerfile, docker-compose, CI job that builds the image and renders through it.
+To do: visual regression tests, a first tagged release, publishing (PyPI or an
+internal index, container registry).
 
 ## Later / out of scope for now
 - Digital signatures (`pyhanko`), form filling, encryption and passwords (pikepdf)
