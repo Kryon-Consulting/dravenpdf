@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import Server, pdf_text
-from dravenpdf import BlockedRequestError, PdfDocument
+from dravenpdf import BlockedRequestError, IncompleteRenderError, PdfDocument
 from dravenpdf.cli import app
 
 pytestmark = pytest.mark.browser
@@ -74,3 +74,16 @@ def test_stamp_html(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "HTML STAMP" in pdf_text(PdfDocument.open(tmp_path / "b.pdf"))[0]
+
+
+def test_render_warns_and_can_be_strict(tmp_path: Path) -> None:
+    (tmp_path / "in.html").write_text('<p>body</p><img src="missing.png">')
+    args = ["render", str(tmp_path / "in.html"), "-o", str(tmp_path / "o.pdf")]
+
+    lenient = runner.invoke(app, args)
+    strict = runner.invoke(app, [*args, "--fail-on-resource-errors"])
+
+    assert lenient.exit_code == 0
+    assert "warning:" in lenient.output
+    assert "missing.png" in lenient.output
+    assert isinstance(strict.exception, IncompleteRenderError)

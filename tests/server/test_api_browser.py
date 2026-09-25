@@ -93,3 +93,25 @@ def test_stamp_html(live: TestClient) -> None:
 
 def test_readyz_with_real_browser(live: TestClient) -> None:
     assert live.get("/readyz").json()["status"] == "ready"
+
+
+def test_render_bundle(live: TestClient) -> None:
+    from conftest import SVG
+
+    response = live.post(
+        "/v1/render/bundle",
+        files=[
+            ("files", ("index.html", b'<link rel="stylesheet" href="css/site.css"><h1>Bundled</h1>'
+                       b'<img src="img/logo.svg" onload="document.body.append(\'IMG-OK\')">'
+                       b'<img src="img/missing.png">', "text/html")),
+            ("files", ("css/site.css", b'h1::after { content: " CSS-OK"; }', "text/css")),
+            ("files", ("img/logo.svg", SVG, "image/svg+xml")),
+        ],
+        headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
+    text = pdf_text(PdfDocument.from_bytes(response.content))[0]
+    assert "Bundled CSS-OK" in text
+    assert "IMG-OK" in text
+    assert response.headers["x-dravenpdf-resource-errors"] == "1"  # img/missing.png

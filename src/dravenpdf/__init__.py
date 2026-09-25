@@ -6,8 +6,10 @@ from importlib.metadata import PackageNotFoundError, version
 
 from dravenpdf.document import PdfDocument
 from dravenpdf.errors import (
+    AssetError,
     BlockedRequestError,
     DravenPdfError,
+    IncompleteRenderError,
     InvalidPdfError,
     LimitExceededError,
     PdfOperationError,
@@ -16,8 +18,9 @@ from dravenpdf.errors import (
     RenderTimeoutError,
     TemplateError,
 )
-from dravenpdf.options import HeaderFooter, Margins, RenderOptions
+from dravenpdf.options import HeaderFooter, Margins, RenderOptions, Viewport
 from dravenpdf.render import AsyncRenderer, BrowserPool, Renderer, RequestGuard
+from dravenpdf.render.report import FailedRequest, HttpError, RenderReport
 
 try:
     __version__ = version("dravenpdf")
@@ -25,11 +28,15 @@ except PackageNotFoundError:  # running from a source tree without installing
     __version__ = "0.0.0"
 
 __all__ = [
+    "AssetError",
     "AsyncRenderer",
     "BlockedRequestError",
     "BrowserPool",
     "DravenPdfError",
+    "FailedRequest",
     "HeaderFooter",
+    "HttpError",
+    "IncompleteRenderError",
     "InvalidPdfError",
     "LimitExceededError",
     "Margins",
@@ -38,9 +45,11 @@ __all__ = [
     "PoolExhaustedError",
     "RenderError",
     "RenderOptions",
+    "RenderReport",
     "RenderTimeoutError",
     "Renderer",
     "RequestGuard",
     "TemplateError",
+    "Viewport",
     "__version__",
 ]

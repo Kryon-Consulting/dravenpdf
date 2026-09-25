@@ -38,11 +38,25 @@ development only). Keys are compared in constant time. `/healthz`, `/readyz`,
 | `POST /v1/render/html` | `{"html", "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
 | `POST /v1/render/url` | `{"url", "options"?, "post"?, "filename"?}` | `application/pdf` |
 | `POST /v1/render/template` | `{"template", "data"?, "base_url"?, "options"?, "post"?, "filename"?}` | `application/pdf` |
+| `POST /v1/render/bundle` | multipart: `files` (assets; each file's name is its bundle path), `html` or a file named `index.html`, `data`? (JSON: render as a template), `options`? / `post`? (JSON), `filename`? | `application/pdf` |
 
 - `options` is `RenderOptions` (see [library-api.md](library-api.md#renderoptions)):
   paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
   capped at `DRAVENPDF_RENDER_TIMEOUT_MS`. It covers the whole request, including
   time spent waiting for a free browser and (re)launching Chromium.
+- `/v1/render/bundle` sends the HTML together with its CSS, fonts, images and scripts.
+  Relative references resolve inside the bundle; files are served from memory and never
+  reach the network (other URLs the page loads go through the SSRF guard as usual).
+  Paths must be relative, without `..`; a missing file is a 404 counted in
+  `X-DravenPdf-Resource-Errors`. The request body limit applies to the whole bundle.
+
+  ```bash
+  curl -X POST http://localhost:8000/v1/render/bundle -H "X-API-Key: $KEY" \
+    -F "files=@index.html" \
+    -F "files=@site.css;filename=css/site.css" \
+    -F "files=@logo.png;filename=img/logo.png" \
+    -F 'options={"paper":"A4","fail_on_resource_errors":true}' -o out.pdf
+  ```
 - `template` is Jinja2 **source** (sandboxed, autoescaped). The service does not read
   template files from its own disk.
 - `post` is optional work on the result:
@@ -104,6 +118,12 @@ before it is rendered. ZIP responses (`split`, `pdf-to-images`) stop at
 Every response has an `X-Request-ID` header (the client's own, if it sent one), and
 every request is logged with it.
 
+Render responses also carry counts from the render report:
+`X-DravenPdf-Resource-Errors` (failed loads and 4xx/5xx sub-resources),
+`X-DravenPdf-Page-Errors` (uncaught JavaScript exceptions) and `X-DravenPdf-Blocked`.
+Details are in the server log. To fail instead, set `fail_on_resource_errors` or
+`fail_on_page_errors` in `options`.
+
 ## Errors
 
 Error responses are JSON: `{"error": {"code": str, "message": str}}`. The mapping
@@ -120,6 +140,7 @@ lives in `src/dravenpdf/server/errors.py`.
 | 422 | `invalid_pdf` | Looks like a PDF but can't be read, or is password-protected |
 | 422 | `blocked_request` | The URL or something the page loads was blocked by the SSRF guard |
 | 422 | `render_failed` | The page couldn't be rendered, e.g. the URL returned HTTP 404 |
+| 422 | `render_incomplete` | A strict render (`fail_on_resource_errors` / `fail_on_page_errors`) found problems; the message lists them |
 | 503 | `busy` | Render queue full (the response includes `Retry-After`) |
 | 504 | `render_timeout` | Render exceeded `timeout_ms` (time queued for a browser or launching one counts) |
 | 500 | `internal_error` | Anything else; the message has the request ID, details are only in the log |

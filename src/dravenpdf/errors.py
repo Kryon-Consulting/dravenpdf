@@ -7,6 +7,11 @@ and maps it to a status code in one place (``dravenpdf.server.errors``).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dravenpdf.render.report import RenderReport
+
 
 class DravenPdfError(Exception):
     """Base class for all dravenpdf errors."""
@@ -44,10 +49,26 @@ class BlockedRequestError(RenderError):
         self.url = url
 
 
+class IncompleteRenderError(RenderError):
+    """A strict render found missing resources or script errors (see ``.report``)."""
+
+    code = "render_incomplete"
+
+    def __init__(self, message: str, *, report: RenderReport) -> None:
+        super().__init__(message)
+        self.report = report
+
+
 class TemplateError(DravenPdfError):
     """A Jinja2 template could not be found, parsed or rendered."""
 
     code = "invalid_template"
+
+
+class AssetError(DravenPdfError):
+    """An asset bundle is invalid, e.g. a path with ``..`` or too many files."""
+
+    code = "invalid_request"
 
 
 class InvalidPdfError(DravenPdfError):
@@ -75,8 +96,10 @@ class PoolExhaustedError(DravenPdfError):
 
 
 __all__ = [
+    "AssetError",
     "BlockedRequestError",
     "DravenPdfError",
+    "IncompleteRenderError",
     "InvalidPdfError",
     "LimitExceededError",
     "PdfOperationError",

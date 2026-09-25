@@ -33,6 +33,7 @@ class FakeRenderer:
     result: PdfDocument = field(default_factory=lambda: PdfDocument.from_bytes(pdf_bytes()))
     error: Exception | None = None
     calls: list[tuple[str, Any, RenderOptions | None]] = field(default_factory=list)
+    assets: list[dict[str, bytes] | None] = field(default_factory=list)
     pool: BrowserPool = field(default_factory=BrowserPool)
     is_running: bool = True
 
@@ -49,16 +50,23 @@ class FakeRenderer:
         return self.result
 
     async def from_html(
-        self, html: str, options: RenderOptions | None = None, *, base_url: str | None = None
+        self,
+        html: str,
+        options: RenderOptions | None = None,
+        *,
+        base_url: str | None = None,
+        assets: dict[str, bytes] | None = None,
     ) -> PdfDocument:
+        self.assets.append(assets)
         return await self._answer("html", html, options)
 
     async def from_url(self, url: str, options: RenderOptions | None = None) -> PdfDocument:
         return await self._answer("url", url, options)
 
     async def from_template(
-        self, template: str, data: Any, options: RenderOptions | None = None, **_: Any
+        self, template: str, data: Any, options: RenderOptions | None = None, **kwargs: Any
     ) -> PdfDocument:
+        self.assets.append(kwargs.get("assets"))
         return await self._answer("template", (template, data), options)
 
 

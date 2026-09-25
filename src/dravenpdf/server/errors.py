@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,6 +25,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "limit_exceeded": 422,
     "blocked_request": 422,
     "render_failed": 422,
+    "render_incomplete": 422,
     "busy": 503,
     "render_timeout": 504,
     "internal_error": 500,
@@ -47,6 +50,14 @@ def error_response(code: str, message: str, headers: dict[str, str] | None = Non
     )
 
 
+def describe_validation_errors(errors: Sequence[Any]) -> str:
+    """One line from pydantic/FastAPI validation errors: "field.path: message; ..."."""
+    details = "; ".join(
+        f"{'.'.join(str(p) for p in e['loc'] if p != 'body')}: {e['msg']}" for e in errors
+    )
+    return details or "invalid request"
+
+
 def install(app: FastAPI) -> None:
     @app.exception_handler(DravenPdfError)
     async def _library(request: Request, exc: DravenPdfError) -> JSONResponse:
@@ -61,10 +72,7 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
-        details = "; ".join(
-            f"{'.'.join(str(p) for p in e['loc'] if p != 'body')}: {e['msg']}" for e in exc.errors()
-        )
-        return error_response("invalid_request", details or "invalid request")
+        return error_response("invalid_request", describe_validation_errors(exc.errors()))
 
     @app.exception_handler(HTTPException)
     async def _http(request: Request, exc: HTTPException) -> JSONResponse:

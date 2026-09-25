@@ -39,7 +39,10 @@ with Renderer() as r:
 | `paper` | `"A3" \| "A4" \| "A5" \| "Letter" \| "Legal" \| "Tabloid"` | `"A4"` | Ignored if `width`/`height` are set |
 | `width`, `height` | `str \| None` | `None` | CSS units, e.g. `"210mm"` |
 | `landscape` | `bool` | `False` | |
-| `margins` | `Margins` | 20mm top/bottom, 15mm left/right | |
+| `margins` | `Margins \| None` | 20mm top/bottom, 15mm left/right | `None` sends no margins, leaving them to CSS `@page`; an explicit `@page { margin }` wins either way |
+| `prefer_css_page_size` | `bool` | `False` | Use the size from CSS `@page { size }` instead of `paper` / `width` |
+| `tagged` | `bool` | `False` | Tagged PDF (structure tree for screen readers); not a PDF/UA guarantee |
+| `outline` | `bool` | `False` | Bookmarks from the headings; implies `tagged` (Chromium needs the tags to build it) |
 | `scale` | `float` | `1.0` | 0.1–2.0 |
 | `print_background` | `bool` | `True` | |
 | `media` | `"print" \| "screen"` | `"print"` | CSS media type to emulate |
@@ -48,9 +51,56 @@ with Renderer() as r:
 | `wait_until` | `"load" \| "domcontentloaded" \| "networkidle"` | `"networkidle"` | |
 | `wait_for_selector` | `str \| None` | `None` | |
 | `wait_for_ready_flag` | `bool` | `False` | Wait for `window.__DRAVENPDF_READY__ === true` |
+| `wait_for_expression` | `str \| None` | `None` | JavaScript expression (or function) polled until truthy, e.g. `"window.charts?.every(c => c.done)"` |
 | `timeout_ms` | `int` | `30000` | For the whole render, including waiting for a free browser slot and launching Chromium |
+| `fail_on_resource_errors` | `bool` | `False` | Raise `IncompleteRenderError` if an image, stylesheet, font, script or fetch fails or returns HTTP 4xx/5xx |
+| `fail_on_page_errors` | `bool` | `False` | Raise `IncompleteRenderError` if the page throws an uncaught JavaScript exception |
+| `viewport` | `Viewport(width, height) \| None` | `None` (1280 × 720) | Window size while the page loads; matters for scripts that measure the window (charts, responsive dashboards), not for CSS-only layouts |
+| `device_scale_factor` | `float` | `1.0` | 1–4; higher gives sharper canvas charts in the PDF |
+| `locale` | `str \| None` | `None` | BCP 47 tag like `"de-DE"`: `navigator.language`, `Intl` formatting, `Accept-Language` |
+| `timezone` | `str \| None` | `None` | IANA zone like `"Europe/Berlin"` for dates the page formats |
+| `color_scheme` | `"light" \| "dark" \| "no-preference" \| None` | `None` | What `prefers-color-scheme` sees |
+| `reduced_motion` | `"reduce" \| "no-preference" \| None` | `None` | What `prefers-reduced-motion` sees; `"reduce"` skips many CSS animations |
+
+Environment options apply to that render's own browser context only.
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
+
+### Preparing the page (Python only)
+
+Every `from_*` method on `AsyncRenderer` takes `prepare`, an async function called
+with the Playwright `Page` after it loads and before the waits and printing:
+
+```python
+async def expand_all(page):
+    await page.click("text=Expand all")
+
+doc = await r.from_url("https://dashboard.example/report", prepare=expand_all)
+```
+
+It runs under the render deadline, and the SSRF guard still applies to anything it
+loads. It isn't available over HTTP or on the sync `Renderer`.
+
+### Render reports
+
+Every rendered document carries `doc.render_report`, a `RenderReport` of what went
+wrong while rendering, even when the render succeeded:
+
+```python
+doc = await r.from_url("https://example.com/report")
+report = doc.render_report
+report.ok                    # False if anything failed, errored or was blocked
+report.http_errors           # [HttpError(url, status, resource_type)] – sub-resources with 4xx/5xx
+report.failed_requests       # [FailedRequest(url, reason, resource_type)] – refused, DNS, aborted
+report.page_errors           # ["boom", ...] – uncaught JavaScript exceptions
+report.console_errors        # console.error() messages (don't affect .ok)
+report.blocked               # [(url, reason)] – refused by the SSRF guard
+report.summary()             # short text, e.g. for logs
+```
+
+Each problem URL is listed once. Documents made from a rendered one (`rotate`, `merge`,
+...) have `render_report = None`. Set `fail_on_resource_errors` / `fail_on_page_errors`
+to turn problems into an `IncompleteRenderError` (its `.report` has the details).
 
 ## Working with PDFs
 
@@ -91,8 +141,10 @@ Page numbers in Python arguments are **0-based**. Range strings (`"1-3,5,8-"`) a
 **1-based**, matching how people write page ranges; `"8-"` means page 8 to the end.
 
 Operations that build a new page list (`extract`, `split`, `reorder`, `merge`,
-`insert`) keep document info (title, author, ...) but not bookmarks. `rotate`,
-`delete`, `set_metadata` and `copy` keep everything.
+`insert`) keep document info (title, author, ...) but not bookmarks, and the tag
+structure of a `tagged` PDF won't match the new pages. `rotate`, `delete`,
+`set_metadata` and `copy` keep everything. Render with `tagged`/`outline` last if the
+result must stay accessible.
 
 ### Stamps and watermarks
 
@@ -125,11 +177,29 @@ doc.to_images(dpi=300, max_pixels=40_000_000, max_total_bytes=100 * 2**20)  # Li
 doc.extract_text()                                      # list[str], one per page; no OCR
 ```
 
+## HTML with its assets, from memory
+
+```python
+doc = await r.from_html(
+    '<link rel="stylesheet" href="css/site.css"><img src="img/logo.png">',
+    assets={"css/site.css": css_bytes, "img/logo.png": png_bytes},
+)
+```
+
+The document is served from a private origin that exists only inside the render
+(`https://bundle.dravenpdf.invalid/`), and every request for that origin is answered
+from `assets`, never the network. Relative URLs (including `../` from a stylesheet)
+resolve inside the bundle; a missing file is a 404 in `doc.render_report`. Paths are
+relative with `/` separators and no `..`, empty or `.` parts (else `AssetError`), at
+most 1000 files. Other URLs the page loads still go through the SSRF guard.
+`assets` can't be combined with `base_url` (or `template_dir` for templates).
+
 ## Templates
 
 ```python
 doc = await r.from_template("<h1>Hi {{ name }}</h1>", {"name": "Ada"})       # source string
 doc = await r.from_template("invoice.html", data, template_dir="templates/")  # file in a folder
+doc = await r.from_template(source, data, assets={"logo.png": png_bytes})     # assets in memory
 ```
 
 Templates run in Jinja2's **sandbox** with **autoescaping** on. With `template_dir`,
@@ -153,7 +223,11 @@ dravenpdf render      page.html|URL -o out.pdf [--paper A4] [--landscape] [--mar
                       [--header h.html] [--footer f.html] [--wait-for "#ready"]
                       [--wait-for-ready-flag] [--media print|screen] [--timeout 30]
                       [--allow-host cdn.example.com ...] [--allow-private] [--skip-blocked]
-                      [--compress]
+                      [--compress] [--fail-on-resource-errors] [--fail-on-page-errors]
+                      [--viewport 1920x1080] [--device-scale-factor 2] [--locale de-DE]
+                      [--timezone Europe/Berlin] [--color-scheme dark] [--reduced-motion reduce]
+                      [--prefer-css-page-size] [--css-margins] [--tagged] [--outline]
+                      [--wait-for-expression "window.done === true"]
 dravenpdf template    invoice.html --data data.json -o out.pdf [--paper] [--landscape] [--footer]
 dravenpdf merge       a.pdf b.pdf ... -o out.pdf
 dravenpdf split       in.pdf -o outdir/ (--every 2 | --range 1-3 --range 4-)

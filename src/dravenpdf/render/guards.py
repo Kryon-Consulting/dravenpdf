@@ -9,6 +9,14 @@ of a redirect chain, so a public URL could redirect the browser to an internal o
 unseen. The guard therefore fetches HTTP(S) requests itself with redirects turned
 off, checks every hop, and hands the browser only the final response.
 
+WebSockets are routed separately by Playwright; the guard checks ``ws://`` and
+``wss://`` URLs with the same host rules (as ``http``/``https``) and closes the ones
+it blocks before any connection is made.
+
+If the guard's own fetch fails (connection refused, DNS failure, reset), the request
+is aborted as a network error, so the page sees a failed load instead of a request
+that never finishes and holds the render until its deadline.
+
 ``file://`` URLs are blocked, except inside ``file_root`` (set by ``from_file`` to the
 rendered file's folder, so its relative assets load but ``/etc/passwd`` does not).
 Chromium also refuses ``file://`` loads from pages that are not ``file://`` pages.
@@ -27,14 +35,17 @@ import logging
 import os
 import socket
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Literal
+from contextlib import suppress
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import unquote, urljoin, urlsplit
 from urllib.request import url2pathname
 
-from playwright.async_api import BrowserContext, Route
-from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import BrowserContext, Route, WebSocketRoute
 
 from dravenpdf.errors import BlockedRequestError
+
+if TYPE_CHECKING:
+    from dravenpdf.render.assets import AssetBundle
 
 logger = logging.getLogger("dravenpdf.render.guards")
 
@@ -44,6 +55,8 @@ BlockPolicy = Literal["fail", "skip"]
 MAX_REDIRECTS = 10
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _ALWAYS_ALLOWED_SCHEMES = frozenset({"data", "blob", "about"})
+_WEBSOCKET_SCHEMES = {"ws": "http", "wss": "https"}
+_POLICY_VIOLATION = 1008  # WebSocket close code
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -74,6 +87,7 @@ class RequestGuard:
             link-local addresses. Only for trusted input. Ignored when
             ``allowed_hosts`` is set.
         file_root: allow ``file://`` URLs for files inside this folder.
+        bundle: answer requests for the bundle origin from this in-memory bundle.
         resolver: DNS lookup function; replaceable in tests.
     """
 
@@ -83,8 +97,10 @@ class RequestGuard:
         allowed_hosts: Iterable[str] | None = None,
         allow_private_network: bool = False,
         file_root: str | os.PathLike[str] | None = None,
+        bundle: AssetBundle | None = None,
         resolver: Resolver = resolve_host,
     ) -> None:
+        self._bundle = bundle
         self._exact: set[str] = set()
         self._suffixes: list[str] = []
         self._has_allowlist = allowed_hosts is not None
@@ -103,7 +119,12 @@ class RequestGuard:
     @property
     def checks_requests(self) -> bool:
         """False when every URL is allowed, so no interception is needed."""
-        return self._has_allowlist or not self._allow_private or self._file_root is not None
+        return (
+            self._has_allowlist
+            or not self._allow_private
+            or self._file_root is not None
+            or self._bundle is not None
+        )
 
     def _host_allowlisted(self, host: str) -> bool:
         return host in self._exact or any(host.endswith(s) for s in self._suffixes)
@@ -117,6 +138,7 @@ class RequestGuard:
     async def _reason_to_block(self, url: str) -> str | None:
         parts = urlsplit(url)
         scheme = parts.scheme.lower()
+        scheme = _WEBSOCKET_SCHEMES.get(scheme, scheme)  # same host rules as HTTP
         if scheme in _ALWAYS_ALLOWED_SCHEMES:
             return None
         if scheme == "file" and self._file_root is not None:
@@ -124,6 +146,8 @@ class RequestGuard:
         if scheme not in ("http", "https"):
             return f"scheme {scheme or '(none)'!r} is not allowed"
         host = _normalize_host(parts.hostname or "")
+        if self._bundle is not None and self._bundle.owns(url):
+            return None  # answered from memory by _handle
         if not host:
             return "URL has no host"
         if self._has_allowlist:
@@ -167,13 +191,17 @@ class RequestGuard:
             raise BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
 
     async def install(self, context: BrowserContext) -> None:
-        """Route every request the context makes through this guard."""
+        """Route every request and WebSocket the context makes through this guard."""
         if self.checks_requests:
             await context.route("**/*", self._handle)
+            await context.route_web_socket(lambda _url: True, self._handle_websocket)
 
     async def _handle(self, route: Route) -> None:
         url = route.request.url
         try:
+            if self._bundle is not None and self._bundle.owns(url):
+                await self._bundle.fulfill(route)  # from memory, never the network
+                return
             reason = await self._reason_to_block(url)
             if reason is not None:
                 self._block(url, reason)
@@ -183,9 +211,20 @@ class RequestGuard:
                 await route.continue_()
                 return
             await self._fetch_checking_redirects(route, url)
-        except PlaywrightError as exc:
-            # The page or context went away mid-request; nothing left to answer.
-            logger.debug("request %s ended early: %s", url, exc)
+        except Exception as exc:
+            # Our fetch failed (refused, reset, DNS...) or the page went away. Always
+            # answer the browser: an unanswered route hangs the render to its deadline.
+            logger.info("request to %s failed: %s", url, exc)
+            with suppress(Exception):
+                await route.abort("failed")
+
+    async def _handle_websocket(self, ws: WebSocketRoute) -> None:
+        reason = await self._reason_to_block(ws.url)
+        if reason is not None:
+            self._block(ws.url, reason)
+            await ws.close(code=_POLICY_VIOLATION, reason="blocked by dravenpdf")
+            return
+        ws.connect_to_server()  # messages are forwarded both ways from here on
 
     async def _fetch_checking_redirects(self, route: Route, url: str) -> None:
         method = route.request.method

@@ -13,9 +13,12 @@ from pydantic import ValidationError
 from conftest import pdf_text
 from dravenpdf import (
     BlockedRequestError,
+    HttpError,
+    IncompleteRenderError,
     PdfDocument,
     PoolExhaustedError,
     RenderError,
+    RenderReport,
     RenderTimeoutError,
     TemplateError,
 )
@@ -147,6 +150,7 @@ def test_validation_error_is_400(client: TestClient) -> None:
         (BlockedRequestError("no", url="http://10.0.0.1"), 422, "blocked_request"),
         (RenderError("HTTP 404"), 422, "render_failed"),
         (TemplateError("bad"), 400, "invalid_template"),
+        (IncompleteRenderError("missing", report=RenderReport()), 422, "render_incomplete"),
         (RuntimeError("boom"), 500, "internal_error"),
     ],
 )
@@ -434,7 +438,7 @@ def test_text(client: TestClient) -> None:
 def test_openapi_lists_every_endpoint(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
-    assert len([p for p in paths if p.startswith("/v1/")]) == 15
+    assert len([p for p in paths if p.startswith("/v1/")]) == 16
 
 
 def test_split_holds_one_part_at_a_time(
@@ -465,3 +469,92 @@ def test_split_holds_one_part_at_a_time(
     assert response.status_code == 200
     assert len(zip_names(response.content)) == 6
     assert still_held == [0] * 6
+
+
+def test_render_report_headers(client: TestClient, fake: FakeRenderer) -> None:
+    fake.result.render_report = RenderReport(
+        http_errors=[HttpError("https://a.example/x.png", 404, "image")],
+        page_errors=["boom", "bang"],
+    )
+
+    response = client.post("/v1/render/html", json={"html": "<p>x</p>"}, headers=AUTH)
+
+    assert response.headers["x-dravenpdf-resource-errors"] == "1"
+    assert response.headers["x-dravenpdf-page-errors"] == "2"
+    assert response.headers["x-dravenpdf-blocked"] == "0"
+
+
+def test_non_render_responses_have_no_report_headers(client: TestClient) -> None:
+    response = client.post("/v1/pdf/compress", files={"file": upload(pdf_bytes())}, headers=AUTH)
+
+    assert "x-dravenpdf-resource-errors" not in response.headers
+
+
+# ---------------------------------------------------------------- bundles
+
+
+def asset(path: str, data: bytes = b"x") -> tuple[str, tuple[str, bytes, str]]:
+    return ("files", (path, data, "application/octet-stream"))
+
+
+def test_bundle_with_html_field(client: TestClient, fake: FakeRenderer) -> None:
+    response = client.post(
+        "/v1/render/bundle",
+        data={
+            "html": "<p>doc</p>",
+            "options": '{"landscape": true, "timeout_ms": 60000}',
+            "filename": "My Report",
+        },
+        files=[asset("css/site.css", b"h1{}"), asset("img/logo.png", b"png")],
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-disposition"] == 'inline; filename="My_Report.pdf"'
+    kind, source, options = fake.calls[0]
+    assert (kind, source) == ("html", "<p>doc</p>")
+    assert options is not None
+    assert options.landscape
+    assert options.timeout_ms == 10_000  # clamped like the JSON endpoints
+    assert fake.assets[0] == {"css/site.css": b"h1{}", "img/logo.png": b"png"}
+
+
+def test_bundle_with_index_file_and_template_data(client: TestClient, fake: FakeRenderer) -> None:
+    response = client.post(
+        "/v1/render/bundle",
+        data={"data": '{"name": "Ada"}'},
+        files=[asset("index.html", b"<p>{{ name }}</p>"), asset("a.css")],
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    kind, source, _ = fake.calls[0]
+    assert (kind, source) == ("template", ("<p>{{ name }}</p>", {"name": "Ada"}))
+    assert fake.assets[0] == {"a.css": b"x"}
+
+
+@pytest.mark.parametrize(
+    ("data", "files", "message"),
+    [
+        ({}, [asset("a.css")], "index.html"),
+        ({"html": "x"}, [asset("a.css"), asset("a.css")], "duplicate"),
+        ({"html": "x"}, [asset("../secret.css")], "'..'"),
+        ({"html": "x"}, [asset("/etc/passwd")], "relative"),
+        ({"html": "x", "data": "[1]"}, [], "JSON object"),
+        ({"html": "x", "data": "{nope"}, [], "not valid JSON"),
+        ({"html": "x", "options": '{"paper": "A9"}'}, [], "options: paper"),
+        ({"html": "x", "post": '{"compress": "maybe"}'}, [], "post: compress"),
+    ],
+)
+def test_bundle_bad_requests(
+    client: TestClient,
+    fake: FakeRenderer,
+    data: dict[str, str],
+    files: list[tuple[str, tuple[str, bytes, str]]],
+    message: str,
+) -> None:
+    response = client.post("/v1/render/bundle", data=data, files=files or None, headers=AUTH)
+
+    assert response.status_code == 400, response.text
+    assert message in response.json()["error"]["message"]
+    assert fake.calls == []  # rejected before any render

@@ -39,6 +39,8 @@ pdf/
 │   │   ├── sync.py             # Renderer (sync wrapper)
 │   │   ├── pool.py             # BrowserPool: launch, concurrency, restart
 │   │   ├── guards.py           # request filtering (SSRF), per-request timeouts
+│   │   ├── assets.py           # in-memory asset bundles for from_html(assets=...)
+│   │   ├── report.py           # render reports and strict mode
 │   │   ├── waits.py            # fonts ready, lazy images, custom ready signal
 │   │   └── templates.py        # Jinja2 environment
 │   ├── document/
@@ -85,6 +87,7 @@ custom width/height, orientation, margins, scale, header/footer HTML, page range
 DravenPdfError
 ├── RenderError
 │   ├── RenderTimeoutError
+│   ├── IncompleteRenderError   # strict render found missing resources / script errors
 │   └── BlockedRequestError     # guard refused a URL
 ├── TemplateError               # Jinja2 template not found / invalid / failed
 ├── InvalidPdfError             # input bytes are not a readable PDF
@@ -111,6 +114,15 @@ DravenPdfError
   and printing. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
+- **`assets.py`**: `AssetBundle` for `from_html(..., assets=...)`. The page loads from
+  `https://bundle.dravenpdf.invalid/` (a reserved domain that can't resolve); the guard
+  answers that origin from memory before any other check (`AssetBundle.fulfill`), so
+  bundle requests never reach the network. Paths are validated with `check_path`.
+- **`report.py`**: `ReportCollector` listens to the page's `response`, `requestfailed`,
+  `pageerror` and `console` events and builds the `RenderReport` attached to each
+  rendered document (deduplicated: a 404 stylesheet that Chromium also aborts is listed
+  once; Chromium's own "Failed to load resource" console lines and guard blocks are
+  filtered). Before printing, the renderer calls `check()` for the strict options.
 - **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
   and `http(s)` only when the host resolves to a public IP (or is on the
   allowlist). It blocks private, loopback, link-local, CGNAT and multicast addresses,
@@ -118,7 +130,11 @@ DravenPdfError
   inside `file_root`, which `from_file` sets to the rendered file's folder.
   Playwright does not call route handlers for redirect hops, so the guard fetches
   HTTP(S) requests itself (`route.fetch(max_redirects=0)`), checks each redirect
-  target, and fulfills the browser with the final response. Blocked requests are
+  target, and fulfills the browser with the final response. If that fetch fails, the
+  request is aborted as a network error (never left unanswered, which would hold the
+  render until its deadline). WebSockets are routed separately
+  (`context.route_web_socket`) and checked with the same host rules; blocked ones are
+  closed before connecting. Blocked requests are
   aborted and recorded; with `on_blocked="fail"` (default) the render then raises
   `BlockedRequestError`, with `"skip"` it renders without them.
   Known limit: DNS is resolved separately for the check and the connection

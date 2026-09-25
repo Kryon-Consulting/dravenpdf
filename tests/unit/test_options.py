@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from dravenpdf import HeaderFooter, Margins, RenderOptions
+from dravenpdf import HeaderFooter, Margins, RenderOptions, Viewport
 
 
 def test_defaults_map_to_a4_portrait() -> None:
@@ -101,3 +101,83 @@ def test_round_trips_through_json() -> None:
     )
 
     assert RenderOptions.model_validate_json(opts.model_dump_json()) == opts
+
+
+# ---------------------------------------------------------------- browser environment
+
+
+def test_context_kwargs_default_to_chromium_defaults() -> None:
+    assert RenderOptions().to_context_kwargs() == {}
+
+
+def test_context_kwargs() -> None:
+    opts = RenderOptions(
+        viewport=Viewport(width=1920, height=1080),
+        device_scale_factor=2,
+        locale="de-DE",
+        timezone="Europe/Berlin",
+        color_scheme="dark",
+        reduced_motion="reduce",
+    )
+
+    assert opts.to_context_kwargs() == {
+        "viewport": {"width": 1920, "height": 1080},
+        "device_scale_factor": 2,
+        "locale": "de-DE",
+        "timezone_id": "Europe/Berlin",
+        "color_scheme": "dark",
+        "reduced_motion": "reduce",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("locale", "german", "invalid locale"),
+        ("locale", "de_DE", "invalid locale"),
+        ("timezone", "Mars/Olympus", "unknown time zone"),
+        ("timezone", "../../etc/passwd", "unknown time zone"),
+        ("device_scale_factor", 8, "less than or equal to 4"),
+        ("color_scheme", "sepia", "color_scheme"),
+    ],
+)
+def test_environment_validation(field: str, value: object, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        RenderOptions.model_validate({field: value})
+
+
+@pytest.mark.parametrize(("width", "height"), [(50, 720), (1280, 20_000)])
+def test_viewport_bounds(width: int, height: int) -> None:
+    with pytest.raises(ValidationError):
+        Viewport(width=width, height=height)
+
+
+# ---------------------------------------------------------------- CSS page size, tagging
+
+
+def test_css_page_size_and_no_margins() -> None:
+    kwargs = RenderOptions(prefer_css_page_size=True, margins=None).to_pdf_kwargs()
+
+    assert kwargs["prefer_css_page_size"] is True
+    assert "margin" not in kwargs
+
+
+def test_margins_accept_null_in_json() -> None:
+    assert RenderOptions.model_validate_json('{"margins": null}').margins is None
+
+
+@pytest.mark.parametrize(
+    ("fields", "tagged", "outline"),
+    [({}, None, None), ({"tagged": True}, True, None), ({"outline": True}, True, True)],
+)
+def test_tagging_flags(fields: dict[str, bool], tagged: bool | None, outline: bool | None) -> None:
+    kwargs = RenderOptions(**fields).to_pdf_kwargs()
+
+    assert kwargs.get("tagged") is tagged
+    assert kwargs.get("outline") is outline
+
+
+@pytest.mark.parametrize("value", ["", "x" * 10_001])
+def test_wait_for_expression_length(value: str) -> None:
+    with pytest.raises(ValidationError):
+        RenderOptions(wait_for_expression=value)

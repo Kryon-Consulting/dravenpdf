@@ -33,5 +33,7 @@ async def wait_until_ready(page: Page, options: RenderOptions) -> None:
         await page.wait_for_selector(options.wait_for_selector, state="attached")
     if options.wait_for_ready_flag:
         await page.wait_for_function(f"() => window.{READY_FLAG} === true")
+    if options.wait_for_expression is not None:
+        await page.wait_for_function(options.wait_for_expression)
     await page.evaluate(_LOAD_IMAGES_JS)
     await page.evaluate(_FONTS_READY_JS)

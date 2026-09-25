@@ -92,9 +92,14 @@ class Renderer:
         return self._renderer
 
     def from_html(
-        self, html: str, options: RenderOptions | None = None, *, base_url: str | None = None
+        self,
+        html: str,
+        options: RenderOptions | None = None,
+        *,
+        base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
     ) -> PdfDocument:
-        return self._run(self._async().from_html(html, options, base_url=base_url))
+        return self._run(self._async().from_html(html, options, base_url=base_url, assets=assets))
 
     def from_url(self, url: str, options: RenderOptions | None = None) -> PdfDocument:
         return self._run(self._async().from_url(url, options))
@@ -112,10 +117,16 @@ class Renderer:
         *,
         template_dir: str | PathLike[str] | None = None,
         base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
     ) -> PdfDocument:
         return self._run(
             self._async().from_template(
-                template, data, options, template_dir=template_dir, base_url=base_url
+                template,
+                data,
+                options,
+                template_dir=template_dir,
+                base_url=base_url,
+                assets=assets,
             )
         )
 

@@ -16,16 +16,20 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.errors import BlockedRequestError, RenderError, RenderTimeoutError
+from dravenpdf.errors import AssetError, BlockedRequestError, RenderError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
+from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
 from dravenpdf.render.pool import BrowserPool
+from dravenpdf.render.report import ReportCollector
 from dravenpdf.render.templates import render_template
 from dravenpdf.render.waits import wait_until_ready
 
 logger = logging.getLogger("dravenpdf.render")
 
 Loader = Callable[[Page], Awaitable[None]]
+PageHook = Callable[[Page], Awaitable[None]]
+"""An async function given the loaded page before printing (see ``prepare``)."""
 
 _HEAD_OPEN = re.compile(r"<head(\s[^>]*)?>", re.IGNORECASE)
 
@@ -54,6 +58,11 @@ class AsyncRenderer:
             the one ``playwright install chromium`` downloaded.
         pool: share an existing BrowserPool instead of creating one. The renderer
             then does not start or close it.
+
+    Every ``from_*`` method takes ``prepare``: an async function called with the
+    Playwright ``Page`` after it loads and before the waits and printing (click
+    "expand all", dismiss a banner, ...). It runs under the render deadline, and the
+    request guard still applies to anything it loads. Async API only.
     """
 
     def __init__(
@@ -98,11 +107,14 @@ class AsyncRenderer:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.close()
 
-    def _new_guard(self, file_root: Path | None = None) -> RequestGuard:
+    def _new_guard(
+        self, file_root: Path | None = None, bundle: AssetBundle | None = None
+    ) -> RequestGuard:
         return RequestGuard(
             allowed_hosts=self._allowed_hosts,
             allow_private_network=self._allow_private,
             file_root=file_root,
+            bundle=bundle,
         )
 
     # ------------------------------------------------------------------ public API
@@ -113,9 +125,28 @@ class AsyncRenderer:
         options: RenderOptions | None = None,
         *,
         base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
+        prepare: PageHook | None = None,
     ) -> PdfDocument:
-        """Render an HTML string. ``base_url`` resolves relative links and assets."""
+        """Render an HTML string.
+
+        ``base_url`` resolves relative links against a web address. ``assets`` instead
+        supplies the files the HTML refers to, keyed by relative path
+        (``{"css/site.css": b"...", "img/logo.png": b"..."}``); they are served from
+        memory, and anything missing is a 404 in the render report.
+        """
         opts = options or RenderOptions()
+        if assets is not None:
+            if base_url is not None:
+                raise AssetError("pass either base_url or assets, not both")
+            bundle = AssetBundle(html, assets)
+
+            async def load_bundle(page: Page) -> None:
+                await page.goto(bundle.document_url, wait_until=opts.wait_until)
+
+            return await self._render(
+                load_bundle, opts, self._new_guard(bundle=bundle), prepare=prepare
+            )
         if base_url is not None:
             await self._new_guard().check(base_url)
             html = inject_base_url(html, base_url)
@@ -123,9 +154,11 @@ class AsyncRenderer:
         async def load(page: Page) -> None:
             await page.set_content(html, wait_until=opts.wait_until)
 
-        return await self._render(load, opts)
+        return await self._render(load, opts, prepare=prepare)
 
-    async def from_url(self, url: str, options: RenderOptions | None = None) -> PdfDocument:
+    async def from_url(
+        self, url: str, options: RenderOptions | None = None, *, prepare: PageHook | None = None
+    ) -> PdfDocument:
         """Render a web page. The URL and everything it loads go through the guard."""
         opts = options or RenderOptions()
         await self._new_guard().check(url)
@@ -135,10 +168,14 @@ class AsyncRenderer:
             if response is not None and response.status >= 400:
                 raise RenderError(f"{url} returned HTTP {response.status}")
 
-        return await self._render(load, opts)
+        return await self._render(load, opts, prepare=prepare)
 
     async def from_file(
-        self, path: str | PathLike[str], options: RenderOptions | None = None
+        self,
+        path: str | PathLike[str],
+        options: RenderOptions | None = None,
+        *,
+        prepare: PageHook | None = None,
     ) -> PdfDocument:
         """Render a local HTML file; relative assets resolve from its folder.
 
@@ -154,7 +191,9 @@ class AsyncRenderer:
         async def load(page: Page) -> None:
             await page.goto(url, wait_until=opts.wait_until)
 
-        return await self._render(load, opts, self._new_guard(file_root=file.parent))
+        return await self._render(
+            load, opts, self._new_guard(file_root=file.parent), prepare=prepare
+        )
 
     async def from_template(
         self,
@@ -164,18 +203,25 @@ class AsyncRenderer:
         *,
         template_dir: str | PathLike[str] | None = None,
         base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
+        prepare: PageHook | None = None,
     ) -> PdfDocument:
         """Render a Jinja2 template (sandboxed, autoescaped) to PDF.
 
         With ``template_dir``, ``template`` is a file name in that folder; relative
         assets (CSS, images) resolve from the folder, and the page may load files from
         it only. Without it, ``template`` is the template source. ``base_url`` makes
-        relative assets resolve against a web URL instead.
+        relative assets resolve against a web URL instead, and ``assets`` supplies them
+        from memory (see :meth:`from_html`).
         """
+        if assets is not None and template_dir is not None:
+            raise AssetError("pass either template_dir or assets, not both")
         opts = options or RenderOptions()
         html = await asyncio.to_thread(render_template, template, data, template_dir=template_dir)
-        if template_dir is None or base_url is not None:
-            return await self.from_html(html, opts, base_url=base_url)
+        if template_dir is None or base_url is not None or assets is not None:
+            return await self.from_html(
+                html, opts, base_url=base_url, assets=assets, prepare=prepare
+            )
         folder = await asyncio.to_thread(Path(template_dir).resolve)
         folder_url = folder.as_uri() + "/"
 
@@ -185,14 +231,20 @@ class AsyncRenderer:
             await page.goto(folder_url, wait_until="domcontentloaded")
             await page.set_content(html, wait_until=opts.wait_until)
 
-        return await self._render(load, opts, self._new_guard(file_root=folder))
+        return await self._render(load, opts, self._new_guard(file_root=folder), prepare=prepare)
 
     # ------------------------------------------------------------------ internals
 
     async def _render(
-        self, load: Loader, opts: RenderOptions, guard: RequestGuard | None = None
+        self,
+        load: Loader,
+        opts: RenderOptions,
+        guard: RequestGuard | None = None,
+        *,
+        prepare: PageHook | None = None,
     ) -> PdfDocument:
         guard = guard or self._new_guard()
+        collector = ReportCollector()
         # One deadline for the whole render: waiting for a browser slot, launching
         # Chromium, creating the context and page, loading, waiting and printing.
         loop = asyncio.get_running_loop()
@@ -201,18 +253,28 @@ class AsyncRenderer:
             async with (
                 asyncio.timeout_at(deadline),
                 self.pool.context(
-                    deadline=deadline, service_workers="block", accept_downloads=False
+                    deadline=deadline,
+                    service_workers="block",
+                    accept_downloads=False,
+                    **opts.to_context_kwargs(),
                 ) as ctx,
             ):
                 try:
                     await guard.install(ctx)
                     page = await ctx.new_page()
+                    collector.attach(page)
                     page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
                     await page.emulate_media(media=opts.media)
                     await load(page)
+                    if prepare is not None:
+                        await prepare(page)  # e.g. expand sections, dismiss a banner
                     await wait_until_ready(page, opts)
                     if self._on_blocked == "fail":
                         guard.raise_if_blocked()
+                    collector.check(
+                        fail_on_resource_errors=opts.fail_on_resource_errors,
+                        fail_on_page_errors=opts.fail_on_page_errors,
+                    )
                     data = await page.pdf(**opts.to_pdf_kwargs())
                 except PlaywrightError as exc:
                     if isinstance(exc, PlaywrightTimeoutError):
@@ -228,6 +290,10 @@ class AsyncRenderer:
                 f"render did not finish within {opts.timeout_ms} ms",
                 timeout_ms=opts.timeout_ms,
             ) from exc
-        if guard.blocked:
-            logger.info("rendered without %d blocked request(s)", len(guard.blocked))
-        return await asyncio.to_thread(PdfDocument.from_bytes, data)
+        report = collector.report
+        report.blocked = list(guard.blocked)
+        if not report.ok:
+            logger.info("rendered with problems: %s", report.summary())
+        doc = await asyncio.to_thread(PdfDocument.from_bytes, data)
+        doc.render_report = report
+        return doc

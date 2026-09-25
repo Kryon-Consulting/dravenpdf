@@ -20,7 +20,16 @@ from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import BlockedRequestError, DravenPdfError
-from dravenpdf.options import HeaderFooter, Margins, PaperSize, RenderOptions, WaitUntil
+from dravenpdf.options import (
+    ColorScheme,
+    HeaderFooter,
+    Margins,
+    PaperSize,
+    ReducedMotion,
+    RenderOptions,
+    Viewport,
+    WaitUntil,
+)
 from dravenpdf.render.sync import Renderer
 
 app = typer.Typer(
@@ -51,6 +60,9 @@ def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
 
 
 def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> None:
+    report = doc.render_report
+    if report is not None and not report.ok:
+        typer.secho(f"warning: {report.summary()}", fg=typer.colors.YELLOW, err=True)
     data = doc.to_bytes(compress=compress)
     if str(output) == "-":
         sys.stdout.buffer.write(data)
@@ -58,6 +70,15 @@ def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> Non
     else:
         output.write_bytes(data)
         typer.echo(f"wrote {output} ({doc.page_count} page{'s' * (doc.page_count != 1)})", err=True)
+
+
+def _parse_viewport(value: str | None) -> Viewport | None:
+    if value is None:
+        return None
+    width, sep, height = value.lower().partition("x")
+    if not sep or not width.isdigit() or not height.isdigit():
+        _fail(f"--viewport must look like 1920x1080, not {value!r}")
+    return Viewport(width=int(width), height=int(height))
 
 
 def _is_url(value: str) -> bool:
@@ -104,6 +125,7 @@ def _render_options(
     wait_for_ready_flag: bool,
     timeout: int,
     media: str,
+    **extra: Any,
 ) -> RenderOptions:
     fields: dict[str, Any] = {
         "paper": paper,
@@ -113,6 +135,7 @@ def _render_options(
         "wait_for_ready_flag": wait_for_ready_flag,
         "timeout_ms": timeout * 1000,
         "media": media,
+        **extra,
     }
     if margin is not None:
         fields["margins"] = Margins(top=margin, right=margin, bottom=margin, left=margin)
@@ -160,14 +183,61 @@ def render(
         bool, typer.Option(help="Render without blocked resources instead of failing.")
     ] = False,
     compress: Annotated[bool, typer.Option(help="Compress the output.")] = False,
+    fail_on_resource_errors: Annotated[
+        bool, typer.Option(help="Fail if an image, stylesheet, font or fetch fails to load.")
+    ] = False,
+    fail_on_page_errors: Annotated[
+        bool, typer.Option(help="Fail if the page throws a JavaScript error.")
+    ] = False,
+    viewport: Annotated[
+        str | None, typer.Option(help="Window size while loading, e.g. 1920x1080.")
+    ] = None,
+    device_scale_factor: Annotated[
+        float, typer.Option(help="1-4; higher gives sharper canvas charts.")
+    ] = 1.0,
+    locale: Annotated[str | None, typer.Option(help="Locale like de-DE.")] = None,
+    timezone: Annotated[str | None, typer.Option(help="Time zone like Europe/Berlin.")] = None,
+    color_scheme: Annotated[
+        ColorScheme | None, typer.Option(help="light, dark or no-preference.")
+    ] = None,
+    reduced_motion: Annotated[
+        ReducedMotion | None, typer.Option(help="reduce or no-preference.")
+    ] = None,
+    prefer_css_page_size: Annotated[
+        bool, typer.Option(help="Use the page size from CSS @page { size }.")
+    ] = False,
+    css_margins: Annotated[
+        bool, typer.Option(help="Send no margins; leave them to CSS @page rules.")
+    ] = False,
+    tagged: Annotated[bool, typer.Option(help="Write a tagged (accessible) PDF.")] = False,
+    outline: Annotated[bool, typer.Option(help="Add bookmarks from headings.")] = False,
+    wait_for_expression: Annotated[
+        str | None, typer.Option(help="JavaScript expression to wait for (truthy).")
+    ] = None,
 ) -> None:
-    """Render an HTML file or a web page to PDF."""
+    """Render an HTML file or a web page to PDF. Load problems are printed as warnings."""
     if media not in ("print", "screen"):
         _fail("--media must be print or screen")
     options = _render_options(
         paper, landscape, margin, header, footer, wait_until, wait_for,
         wait_for_ready_flag, timeout, media,
+        fail_on_resource_errors=fail_on_resource_errors,
+        fail_on_page_errors=fail_on_page_errors,
+        viewport=_parse_viewport(viewport),
+        device_scale_factor=device_scale_factor,
+        locale=locale,
+        timezone=timezone,
+        color_scheme=color_scheme,
+        reduced_motion=reduced_motion,
+        prefer_css_page_size=prefer_css_page_size,
+        tagged=tagged,
+        outline=outline,
+        wait_for_expression=wait_for_expression,
     )  # fmt: skip
+    if css_margins:
+        if margin is not None:
+            _fail("use either --margin or --css-margins")
+        options = options.model_copy(update={"margins": None})
     with Renderer(
         allowed_hosts=allow_host,
         allow_private_network=allow_private,

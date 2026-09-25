@@ -103,12 +103,15 @@ def _apply_post(doc: PdfDocument, post: PostProcess | None) -> bytes:
 async def pdf_response(
     doc: PdfDocument, filename: str = "document.pdf", post: PostProcess | None = None
 ) -> Response:
+    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    report = doc.render_report  # read before post-processing makes a new document
+    if report is not None:
+        # Counts only: details can be long, and they are in the server log.
+        headers["X-DravenPdf-Resource-Errors"] = str(report.resource_problems)
+        headers["X-DravenPdf-Page-Errors"] = str(len(report.page_errors))
+        headers["X-DravenPdf-Blocked"] = str(len(report.blocked))
     data = await asyncio.to_thread(_apply_post, doc, post)
-    return Response(
-        content=data,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
+    return Response(content=data, media_type="application/pdf", headers=headers)
 
 
 async def zip_response(

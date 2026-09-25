@@ -22,6 +22,7 @@ dependencies = [
     "jinja2>=3.1",
     "pydantic>=2.7",
     "typer>=0.12",
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]
@@ -44,6 +45,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "deptry>=0.25.1",
+    "websockets>=12",
 ]
 
 [build-system]
@@ -81,7 +83,10 @@ select = [
 
 # ---------------------------------------------------------------- deptry
 [tool.deptry.per_rule_ignores]
-DEP002 = ["python-multipart"]  # FastAPI imports it to parse form uploads
+DEP002 = [
+    "python-multipart",  # FastAPI imports it to parse form uploads
+    "tzdata",            # zoneinfo reads it when the OS has no time zone database
+]
 DEP003 = ["starlette"]         # FastAPI's own dependency; it pins the version
 
 # ---------------------------------------------------------------- mypy
