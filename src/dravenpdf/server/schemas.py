@@ -13,6 +13,12 @@ from dravenpdf.options import RenderOptions
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def safe_filename(value: str) -> str:
+    """A download name made of safe characters, ending in .pdf."""
+    name = _SAFE_FILENAME.sub("_", value).strip("._") or "document"
+    return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+
+
 class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,8 +56,7 @@ class _RenderRequest(_Body):
     @field_validator("filename")
     @classmethod
     def _safe_filename(cls, value: str) -> str:
-        name = _SAFE_FILENAME.sub("_", value).strip("._") or "document"
-        return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+        return safe_filename(value)
 
 
 class RenderHtmlRequest(_RenderRequest):

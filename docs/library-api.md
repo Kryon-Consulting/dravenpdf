@@ -148,11 +148,29 @@ doc.to_images(dpi=300, max_pixels=40_000_000, max_total_bytes=100 * 2**20)  # Li
 doc.extract_text()                                      # list[str], one per page; no OCR
 ```
 
+## HTML with its assets, from memory
+
+```python
+doc = await r.from_html(
+    '<link rel="stylesheet" href="css/site.css"><img src="img/logo.png">',
+    assets={"css/site.css": css_bytes, "img/logo.png": png_bytes},
+)
+```
+
+The document is served from a private origin that exists only inside the render
+(`https://bundle.dravenpdf.invalid/`), and every request for that origin is answered
+from `assets`, never the network. Relative URLs (including `../` from a stylesheet)
+resolve inside the bundle; a missing file is a 404 in `doc.render_report`. Paths are
+relative with `/` separators and no `..`, empty or `.` parts (else `AssetError`), at
+most 1000 files. Other URLs the page loads still go through the SSRF guard.
+`assets` can't be combined with `base_url` (or `template_dir` for templates).
+
 ## Templates
 
 ```python
 doc = await r.from_template("<h1>Hi {{ name }}</h1>", {"name": "Ada"})       # source string
 doc = await r.from_template("invoice.html", data, template_dir="templates/")  # file in a folder
+doc = await r.from_template(source, data, assets={"logo.png": png_bytes})     # assets in memory
 ```
 
 Templates run in Jinja2's **sandbox** with **autoescaping** on. With `template_dir`,

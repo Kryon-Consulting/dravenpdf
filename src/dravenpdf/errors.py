@@ -65,6 +65,12 @@ class TemplateError(DravenPdfError):
     code = "invalid_template"
 
 
+class AssetError(DravenPdfError):
+    """An asset bundle is invalid, e.g. a path with ``..`` or too many files."""
+
+    code = "invalid_request"
+
+
 class InvalidPdfError(DravenPdfError):
     """Input bytes could not be read as a PDF."""
 
@@ -90,6 +96,7 @@ class PoolExhaustedError(DravenPdfError):
 
 
 __all__ = [
+    "AssetError",
     "BlockedRequestError",
     "DravenPdfError",
     "IncompleteRenderError",

@@ -39,6 +39,8 @@ pdf/
 │   │   ├── sync.py             # Renderer (sync wrapper)
 │   │   ├── pool.py             # BrowserPool: launch, concurrency, restart
 │   │   ├── guards.py           # request filtering (SSRF), per-request timeouts
+│   │   ├── assets.py           # in-memory asset bundles for from_html(assets=...)
+│   │   ├── report.py           # render reports and strict mode
 │   │   ├── waits.py            # fonts ready, lazy images, custom ready signal
 │   │   └── templates.py        # Jinja2 environment
 │   ├── document/
@@ -112,6 +114,10 @@ DravenPdfError
   and printing. Each call: take a pool slot → create a new context →
   install guards → load content → run waits → `page.pdf(...)` → close the
   context → return a `PdfDocument`.
+- **`assets.py`**: `AssetBundle` for `from_html(..., assets=...)`. The page loads from
+  `https://bundle.dravenpdf.invalid/` (a reserved domain that can't resolve); the guard
+  answers that origin from memory before any other check (`AssetBundle.fulfill`), so
+  bundle requests never reach the network. Paths are validated with `check_path`.
 - **`report.py`**: `ReportCollector` listens to the page's `response`, `requestfailed`,
   `pageerror` and `console` events and builds the `RenderReport` attached to each
   rendered document (deduplicated: a 404 stylesheet that Chromium also aborts is listed

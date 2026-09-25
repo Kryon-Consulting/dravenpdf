@@ -36,13 +36,16 @@ import os
 import socket
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import unquote, urljoin, urlsplit
 from urllib.request import url2pathname
 
 from playwright.async_api import BrowserContext, Route, WebSocketRoute
 
 from dravenpdf.errors import BlockedRequestError
+
+if TYPE_CHECKING:
+    from dravenpdf.render.assets import AssetBundle
 
 logger = logging.getLogger("dravenpdf.render.guards")
 
@@ -84,6 +87,7 @@ class RequestGuard:
             link-local addresses. Only for trusted input. Ignored when
             ``allowed_hosts`` is set.
         file_root: allow ``file://`` URLs for files inside this folder.
+        bundle: answer requests for the bundle origin from this in-memory bundle.
         resolver: DNS lookup function; replaceable in tests.
     """
 
@@ -93,8 +97,10 @@ class RequestGuard:
         allowed_hosts: Iterable[str] | None = None,
         allow_private_network: bool = False,
         file_root: str | os.PathLike[str] | None = None,
+        bundle: AssetBundle | None = None,
         resolver: Resolver = resolve_host,
     ) -> None:
+        self._bundle = bundle
         self._exact: set[str] = set()
         self._suffixes: list[str] = []
         self._has_allowlist = allowed_hosts is not None
@@ -113,7 +119,12 @@ class RequestGuard:
     @property
     def checks_requests(self) -> bool:
         """False when every URL is allowed, so no interception is needed."""
-        return self._has_allowlist or not self._allow_private or self._file_root is not None
+        return (
+            self._has_allowlist
+            or not self._allow_private
+            or self._file_root is not None
+            or self._bundle is not None
+        )
 
     def _host_allowlisted(self, host: str) -> bool:
         return host in self._exact or any(host.endswith(s) for s in self._suffixes)
@@ -135,6 +146,8 @@ class RequestGuard:
         if scheme not in ("http", "https"):
             return f"scheme {scheme or '(none)'!r} is not allowed"
         host = _normalize_host(parts.hostname or "")
+        if self._bundle is not None and self._bundle.owns(url):
+            return None  # answered from memory by _handle
         if not host:
             return "URL has no host"
         if self._has_allowlist:
@@ -186,6 +199,9 @@ class RequestGuard:
     async def _handle(self, route: Route) -> None:
         url = route.request.url
         try:
+            if self._bundle is not None and self._bundle.owns(url):
+                await self._bundle.fulfill(route)  # from memory, never the network
+                return
             reason = await self._reason_to_block(url)
             if reason is not None:
                 self._block(url, reason)

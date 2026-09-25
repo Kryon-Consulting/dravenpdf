@@ -16,8 +16,9 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.errors import BlockedRequestError, RenderError, RenderTimeoutError
+from dravenpdf.errors import AssetError, BlockedRequestError, RenderError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
+from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
 from dravenpdf.render.pool import BrowserPool
 from dravenpdf.render.report import ReportCollector
@@ -99,11 +100,14 @@ class AsyncRenderer:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.close()
 
-    def _new_guard(self, file_root: Path | None = None) -> RequestGuard:
+    def _new_guard(
+        self, file_root: Path | None = None, bundle: AssetBundle | None = None
+    ) -> RequestGuard:
         return RequestGuard(
             allowed_hosts=self._allowed_hosts,
             allow_private_network=self._allow_private,
             file_root=file_root,
+            bundle=bundle,
         )
 
     # ------------------------------------------------------------------ public API
@@ -114,9 +118,25 @@ class AsyncRenderer:
         options: RenderOptions | None = None,
         *,
         base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
     ) -> PdfDocument:
-        """Render an HTML string. ``base_url`` resolves relative links and assets."""
+        """Render an HTML string.
+
+        ``base_url`` resolves relative links against a web address. ``assets`` instead
+        supplies the files the HTML refers to, keyed by relative path
+        (``{"css/site.css": b"...", "img/logo.png": b"..."}``); they are served from
+        memory, and anything missing is a 404 in the render report.
+        """
         opts = options or RenderOptions()
+        if assets is not None:
+            if base_url is not None:
+                raise AssetError("pass either base_url or assets, not both")
+            bundle = AssetBundle(html, assets)
+
+            async def load_bundle(page: Page) -> None:
+                await page.goto(bundle.document_url, wait_until=opts.wait_until)
+
+            return await self._render(load_bundle, opts, self._new_guard(bundle=bundle))
         if base_url is not None:
             await self._new_guard().check(base_url)
             html = inject_base_url(html, base_url)
@@ -165,18 +185,22 @@ class AsyncRenderer:
         *,
         template_dir: str | PathLike[str] | None = None,
         base_url: str | None = None,
+        assets: Mapping[str, bytes] | None = None,
     ) -> PdfDocument:
         """Render a Jinja2 template (sandboxed, autoescaped) to PDF.
 
         With ``template_dir``, ``template`` is a file name in that folder; relative
         assets (CSS, images) resolve from the folder, and the page may load files from
         it only. Without it, ``template`` is the template source. ``base_url`` makes
-        relative assets resolve against a web URL instead.
+        relative assets resolve against a web URL instead, and ``assets`` supplies them
+        from memory (see :meth:`from_html`).
         """
+        if assets is not None and template_dir is not None:
+            raise AssetError("pass either template_dir or assets, not both")
         opts = options or RenderOptions()
         html = await asyncio.to_thread(render_template, template, data, template_dir=template_dir)
-        if template_dir is None or base_url is not None:
-            return await self.from_html(html, opts, base_url=base_url)
+        if template_dir is None or base_url is not None or assets is not None:
+            return await self.from_html(html, opts, base_url=base_url, assets=assets)
         folder = await asyncio.to_thread(Path(template_dir).resolve)
         folder_url = folder.as_uri() + "/"
 
