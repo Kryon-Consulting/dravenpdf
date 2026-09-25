@@ -34,7 +34,8 @@ health and metrics, server tests. Also `/v1/pdf/delete` and `/v1/pdf/reorder`,
 request IDs, streamed-body size limit, and post-processing on render endpoints.
 
 ## M7 – Packaging and deployment ◐
-Done: Dockerfile, docker-compose, CI job that builds the image and renders through it.
+Done: Dockerfile, docker-compose, and a CI job that builds the image and renders
+through it. CI is disabled for now (manual runs only), so the image has not been built yet.
 To do: visual regression tests, a first tagged release, publishing (PyPI or an
 internal index, container registry).
 

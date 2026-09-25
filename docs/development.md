@@ -30,6 +30,9 @@ uv run playwright install chromium
 | Run the service | `DRAVENPDF_API_KEY=dev uv run uvicorn dravenpdf.server.app:create_app --factory --reload` |
 | Build the Docker image | `docker build -t dravenpdf .` |
 
+CI is disabled for now (`.github/workflows/ci.yml` only runs when started by hand),
+so run `make check` and the browser tests locally before pushing.
+
 A `Makefile` wraps these (`make lint`, `make test`, `make serve`, `make docker`).
 
 ## Tests

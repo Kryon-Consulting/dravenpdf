@@ -20,7 +20,7 @@ libraries like IronPDF, but uses open-source parts:
 
 M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
 HTTP service (`server/`). M7 (packaging) is partly done: Dockerfile and compose exist
-and CI builds the image; visual tests and a first release remain. The build order is in `docs/roadmap.md`.
+but the Docker image has never been built; visual tests and a first release remain. The build order is in `docs/roadmap.md`.
 Update that file (and the status line in `README.md`) as milestones land.
 
 ## Where to look
@@ -73,6 +73,12 @@ Full reasoning is in `docs/decisions.md`.
 - Don't replace the guard's `route.fetch(max_redirects=0)` loop with
   `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
   could redirect Chromium to an internal one unchecked (tests cover this).
+
+## CI
+
+CI (`.github/workflows/ci.yml`) is **disabled**: it only runs when started by hand.
+Nothing checks pushes automatically, so run `make check` (and the browser tests,
+`uv run pytest`) before every commit. Don't re-enable the triggers without asking.
 
 ## Commands
 
