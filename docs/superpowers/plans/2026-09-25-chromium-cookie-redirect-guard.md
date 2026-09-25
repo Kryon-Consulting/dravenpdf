@@ -152,6 +152,14 @@ async def continue_paused_request(session: CDPSession, request_id: str) -> None:
 
 Start with Task 1, then Task 2. Task 2 is a hard go/no-go decision. Do not begin production guard changes or update D11's claims if the gate fails. After Task 5, request a whole-branch review before integration; the implementation changes a security boundary.
 
+## Feasibility result (2026-09-26)
+
+**Task 2 is blocked; Tasks 3–5 have not started.** The HTTPS baseline in Task 1 passed and was committed as `374adcf`. A disposable CDP probe showed that browser-level `Fetch.enable` pauses each A→B→A redirect hop, a popup's first navigation, and a worker fetch. It preserved Chromium's wire cookies in the tested redirect cases. The full gate was not completed because its fail-closed requirement failed.
+
+When a browser-level Fetch session detached with a request paused, Chromium sent the unchecked HTTPS GET before the session-close callback could close its context. The server recorded request bytes in the original probe twice; an independent reviewer reproduced the race in four of six runs. The request sometimes remained blocked, which does not establish a guarantee. Two Fetch sessions paused requests sequentially: detaching one left the request paused in the other, but detaching both sent it. Both sessions share the same Playwright browser connection, so they do not cover common transport loss.
+
+No production guard or D11 documentation was changed. The disposable failing probe remains local and uncommitted at `tests/integration/test_cdp_probe.py` in the implementation worktree. A revised design must either prove independent fail-closed enforcement or explicitly change the approved failure guarantee before Tasks 3–5 resume.
+
 ## API references for implementation
 
 - [CDP Fetch](https://chromedevtools.github.io/devtools-protocol/tot/Fetch/): `requestPaused`, redirect IDs, and per-request header overrides.
