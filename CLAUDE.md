@@ -21,8 +21,8 @@ libraries like IronPDF, but uses open-source parts:
 M1–M6 are done: the library (`render/`, `document/`), the CLI (`cli.py`) and the
 HTTP service (`server/`). After M6: guard fixes (WebSockets, failed fetches), render
 reports and strict mode, in-memory asset bundles, browser environment options, CSS
-page size, tagged PDFs/outlines, expression waits and `prepare` hooks (see
-`docs/roadmap.md`). Rendering behind a login is not built yet and needs a design first.
+page size, tagged PDFs/outlines, expression waits, `prepare` hooks, and rendering
+behind a login (`RenderAuth`; see `docs/roadmap.md` and D11 in `docs/decisions.md`).
 M7 (packaging) is partly done: Dockerfile and compose exist but the Docker image has
 never been built; visual tests and a first release remain.
 Update that file (and the status line in `README.md`) as milestones land.
@@ -79,6 +79,12 @@ Full reasoning is in `docs/decisions.md`.
   render deadline can't leak a half-created browser or context.
 - Build many-part outputs lazily (`PdfDocument.iter_split`) and don't keep earlier
   parts referenced; note that `enumerate()` holds its previous item (see the split route).
+- Credentials (`RenderAuth`) must never reach logs, exceptions, reports, metrics or
+  response headers. Keep values as `SecretStr` until the moment they're handed to
+  Playwright, and pass any Playwright error text through `render/_redact.safe_message`
+  first: its call log lists request headers. Per-hop header rules live in
+  `RequestGuard.hop_headers`; redirect tests in `tests/integration/test_auth.py` fail if
+  credentials follow a redirect to another origin.
 - Every guard route handler must answer the browser on every path (fulfill, continue
   or abort), including when its own fetch fails; an unanswered route hangs the render.
   New kinds of browser traffic (like WebSockets) need their own guard route.

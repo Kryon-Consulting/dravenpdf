@@ -44,6 +44,23 @@ development only). Keys are compared in constant time. `/healthz`, `/readyz`,
   paper, size, margins, header/footer, waits, `timeout_ms`, ... Its `timeout_ms` is
   capped at `DRAVENPDF_RENDER_TIMEOUT_MS`. It covers the whole request, including
   time spent waiting for a free browser and (re)launching Chromium.
+- `/v1/render/url` takes an optional `auth` object for pages behind a login:
+  `{"cookies": [...], "storage_state": {...}, "headers": {"<origin>": {"Name": "value"}}}`
+  (see [library-api.md](library-api.md#rendering-pages-behind-a-login)). Storage state
+  is sent as data (Playwright's `storage_state()` JSON), never a server path. It applies
+  to that one render. It is unrelated to `X-API-Key`, which authenticates the caller to
+  dravenpdf. Credential values never appear in error messages, logs, metrics or
+  response headers.
+
+  ```bash
+  curl -X POST http://localhost:8000/v1/render/url -H "X-API-Key: $KEY" \
+    -H "Content-Type: application/json" -d '{
+      "url": "https://app.example.com/reports/42",
+      "auth": {
+        "cookies": [{"name": "session", "value": "…", "url": "https://app.example.com"}],
+        "headers": {"https://api.example.com": {"Authorization": "Bearer …"}}
+      }}' -o report.pdf
+  ```
 - `/v1/render/bundle` sends the HTML together with its CSS, fonts, images and scripts.
   Relative references resolve inside the bundle; files are served from memory and never
   reach the network (other URLs the page loads go through the SSRF guard as usual).

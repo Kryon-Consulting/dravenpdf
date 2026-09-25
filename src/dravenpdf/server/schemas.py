@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dravenpdf.document.stamp import Position
 from dravenpdf.options import RenderOptions
+from dravenpdf.render.auth import RenderAuth
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -66,6 +67,9 @@ class RenderHtmlRequest(_RenderRequest):
 
 class RenderUrlRequest(_RenderRequest):
     url: str = Field(min_length=1)
+    auth: RenderAuth | None = None
+    """Credentials for the page being rendered (cookies, storage state, per-origin
+    headers). Unrelated to the X-API-Key that authenticates the caller to this service."""
 
 
 class RenderTemplateRequest(_RenderRequest):

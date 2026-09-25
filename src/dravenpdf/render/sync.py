@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.options import RenderOptions
+from dravenpdf.render.auth import RenderAuth
 from dravenpdf.render.renderer import AsyncRenderer
 
 T = TypeVar("T")
@@ -101,8 +102,10 @@ class Renderer:
     ) -> PdfDocument:
         return self._run(self._async().from_html(html, options, base_url=base_url, assets=assets))
 
-    def from_url(self, url: str, options: RenderOptions | None = None) -> PdfDocument:
-        return self._run(self._async().from_url(url, options))
+    def from_url(
+        self, url: str, options: RenderOptions | None = None, *, auth: RenderAuth | None = None
+    ) -> PdfDocument:
+        return self._run(self._async().from_url(url, options, auth=auth))
 
     def from_file(
         self, path: str | PathLike[str], options: RenderOptions | None = None

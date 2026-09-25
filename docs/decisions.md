@@ -46,3 +46,13 @@ It could be added later as an optional lightweight backend.
 Every render gets a fresh browser context, and every request the page makes is
 checked by the SSRF guard (block `file://`, private, loopback, link-local and
 metadata IPs; optional host allowlist). Jinja2 runs sandboxed with autoescaping.
+
+## D11 – Page credentials are per render, per exact origin
+`RenderAuth` is separate from `RenderOptions` (layout) and from the service's own
+`X-API-Key`. Cookies and storage state use the browser's own mechanisms (installed in
+the fresh context before the first navigation) rather than a `Cookie` header, so the
+browser's cookie rules apply. Extra headers are added by the guard per hop and only for
+their exact origin; they are rebuilt on every redirect hop, `Authorization` is dropped
+when a redirect leaves the original origin, and cookies after the first hop come from
+the jar for the new URL. Values are `SecretStr` and Playwright's call logs (which list
+headers) are stripped from logs and errors.

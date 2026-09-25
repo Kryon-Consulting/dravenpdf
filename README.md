@@ -20,6 +20,7 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **Diagnostics:** a report of failed resources and script errors on every render; optional strict mode
 - **Browser environment:** viewport, locale, time zone, colour scheme, device scale factor
 - **Print control:** CSS `@page` sizes and margins, tagged PDFs, bookmarks from headings
+- **Pages behind a login:** cookies, Playwright storage state and per-origin headers, isolated per render
 - **Edit PDFs:** merge, split, extract, rotate, delete and reorder pages; set metadata; compress
 - **Stamps and watermarks** from text, images or HTML
 - **Conversion:** images → PDF, PDF → PNG/JPEG, text extraction

@@ -5,6 +5,7 @@ import socket
 import threading
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -48,6 +49,34 @@ def page_size(doc: PdfDocument, index: int = 0) -> tuple[float, float]:
 
 # ---------------------------------------------------------------- local HTTP server
 
+# Every request the test server receives: (Host header, path with query, lowercased
+# headers). Auth tests tag their URLs with ?tag=... and look them up here.
+REQUEST_LOG: list[tuple[str, str, dict[str, str]]] = []
+
+
+def requests_tagged(tag: str) -> list[tuple[str, str, dict[str, str]]]:
+    return [entry for entry in REQUEST_LOG if f"tag={tag}" in entry[1]]
+
+
+_USERS = {"s3cret-alice": "alice", "s3cret-bob": "bob"}
+
+LS_PAGE = b"""<p id="out">waiting</p><script>
+const out = document.getElementById('out');
+const done = t => { out.textContent = t; window.__DRAVENPDF_READY__ = true; };
+const token = localStorage.getItem('token');
+if (!token) done('NO TOKEN');
+else fetch('/auth/api', {headers: {Authorization: 'Bearer ' + token}})
+  .then(r => r.text()).then(done);
+</script>"""
+
+HEADER_PAGE = b"""<p>TENANT PAGE</p>
+<img src="/auth/img.svg" onload="document.body.append(' IMG-OK')"
+     onerror="document.body.append(' IMG-FAIL')">
+<p id="api"></p><script>
+fetch('/auth/api2').then(r => r.text()).then(t => {
+  document.getElementById('api').textContent = t; window.__DRAVENPDF_READY__ = true; });
+</script>"""
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
@@ -63,7 +92,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parts = urlsplit(self.path)
         query = parse_qs(parts.query)
-        if parts.path == "/page.html":
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        REQUEST_LOG.append((headers.get("host", ""), self.path, headers))
+        if parts.path.startswith("/auth/"):
+            self._auth(parts.path, query, headers)
+        elif parts.path == "/page.html":
             self._send(200, PAGE_WITH_IMAGE)
         elif parts.path == "/img.svg":
             self._send(200, SVG, "image/svg+xml")
@@ -74,6 +107,33 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
         elif parts.path == "/secret":
             self._send(200, b"<p>SECRET</p>")
+        else:
+            self._send(404, b"not found")
+
+    def _auth(self, path: str, query: dict[str, list[str]], headers: dict[str, str]) -> None:
+        cookies = dict(
+            c.strip().split("=", 1) for c in headers.get("cookie", "").split(";") if "=" in c
+        )
+        tenant_ok = headers.get("x-tenant") == "acme"
+        if path == "/auth/cookie-page":
+            user = _USERS.get(cookies.get("session", ""))
+            self._send(200, f"<p>WELCOME {user}</p>".encode() if user else b"<p>LOGIN REQUIRED</p>")
+        elif path == "/auth/ls-page":
+            self._send(200, LS_PAGE)
+        elif path == "/auth/api":
+            ok = headers.get("authorization") == "Bearer ls-t0ken"
+            self._send(200 if ok else 401, b"API-OK" if ok else b"API-DENIED", "text/plain")
+        elif path == "/auth/header-page":
+            self._send(200, HEADER_PAGE if tenant_ok else b"<p>LOGIN REQUIRED</p>")
+        elif path == "/auth/img.svg":
+            self._send(200 if tenant_ok else 401, SVG, "image/svg+xml")
+        elif path == "/auth/api2":
+            self._send(200 if tenant_ok else 401, b"API2-OK" if tenant_ok else b"NO", "text/plain")
+        elif path == "/auth/echo":
+            self._send(200, SVG, "image/svg+xml")
+        elif path == "/auth/page-with":
+            images = "".join(f'<img src="{html_escape(u)}">' for u in query.get("img", []))
+            self._send(200, f"<p>PAGE WITH IMAGES</p>{images}".encode())
         else:
             self._send(404, b"not found")
 

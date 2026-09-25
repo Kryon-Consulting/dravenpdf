@@ -34,6 +34,7 @@ class FakeRenderer:
     error: Exception | None = None
     calls: list[tuple[str, Any, RenderOptions | None]] = field(default_factory=list)
     assets: list[dict[str, bytes] | None] = field(default_factory=list)
+    auth: list[Any] = field(default_factory=list)
     pool: BrowserPool = field(default_factory=BrowserPool)
     is_running: bool = True
 
@@ -60,7 +61,10 @@ class FakeRenderer:
         self.assets.append(assets)
         return await self._answer("html", html, options)
 
-    async def from_url(self, url: str, options: RenderOptions | None = None) -> PdfDocument:
+    async def from_url(
+        self, url: str, options: RenderOptions | None = None, *, auth: Any = None
+    ) -> PdfDocument:
+        self.auth.append(auth)
         return await self._answer("url", url, options)
 
     async def from_template(

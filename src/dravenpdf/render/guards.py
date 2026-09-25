@@ -13,6 +13,13 @@ WebSockets are routed separately by Playwright; the guard checks ``ws://`` and
 ``wss://`` URLs with the same host rules (as ``http``/``https``) and closes the ones
 it blocks before any connection is made.
 
+Credentials: when a render has :class:`~dravenpdf.render.auth.RenderAuth` headers,
+the guard adds them per hop, only when that hop's exact origin (scheme, host, port)
+is configured. Headers are rebuilt for every hop: after the first hop the browser's
+``Cookie`` header is dropped (Playwright then attaches the cookie jar's cookies for
+the new URL), and ``Authorization`` is dropped once a redirect leaves the original
+origin, as browsers do. So one origin's credentials never follow a redirect to another.
+
 If the guard's own fetch fails (connection refused, DNS failure, reset), the request
 is aborted as a network error, so the page sees a failed load instead of a request
 that never finishes and holds the render until its deadline.
@@ -43,9 +50,12 @@ from urllib.request import url2pathname
 from playwright.async_api import BrowserContext, Route, WebSocketRoute
 
 from dravenpdf.errors import BlockedRequestError
+from dravenpdf.render._redact import safe_message
+from dravenpdf.render.auth import origin_of
 
 if TYPE_CHECKING:
     from dravenpdf.render.assets import AssetBundle
+    from dravenpdf.render.auth import RenderAuth
 
 logger = logging.getLogger("dravenpdf.render.guards")
 
@@ -57,6 +67,10 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _ALWAYS_ALLOWED_SCHEMES = frozenset({"data", "blob", "about"})
 _WEBSOCKET_SCHEMES = {"ws": "http", "wss": "https"}
 _POLICY_VIOLATION = 1008  # WebSocket close code
+# Dropped from a request's own headers when a redirect leaves its original origin.
+_ORIGIN_BOUND_HEADERS = frozenset({"authorization", "proxy-authorization"})
+# Recomputed by Playwright for each fetch; never copied from the browser's request.
+_TRANSPORT_HEADERS = frozenset({"host", "content-length"})
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -88,6 +102,7 @@ class RequestGuard:
             ``allowed_hosts`` is set.
         file_root: allow ``file://`` URLs for files inside this folder.
         bundle: answer requests for the bundle origin from this in-memory bundle.
+        auth: add its headers to requests for their exact origins (never others).
         resolver: DNS lookup function; replaceable in tests.
     """
 
@@ -98,9 +113,11 @@ class RequestGuard:
         allow_private_network: bool = False,
         file_root: str | os.PathLike[str] | None = None,
         bundle: AssetBundle | None = None,
+        auth: RenderAuth | None = None,
         resolver: Resolver = resolve_host,
     ) -> None:
         self._bundle = bundle
+        self._auth = auth
         self._exact: set[str] = set()
         self._suffixes: list[str] = []
         self._has_allowlist = allowed_hosts is not None
@@ -124,6 +141,7 @@ class RequestGuard:
             or not self._allow_private
             or self._file_root is not None
             or self._bundle is not None
+            or (self._auth is not None and self._auth.has_headers)
         )
 
     def _host_allowlisted(self, host: str) -> bool:
@@ -214,7 +232,7 @@ class RequestGuard:
         except Exception as exc:
             # Our fetch failed (refused, reset, DNS...) or the page went away. Always
             # answer the browser: an unanswered route hangs the render to its deadline.
-            logger.info("request to %s failed: %s", url, exc)
+            logger.info("request to %s failed: %s", url, safe_message(exc))
             with suppress(Exception):
                 await route.abort("failed")
 
@@ -226,14 +244,39 @@ class RequestGuard:
             return
         ws.connect_to_server()  # messages are forwarded both ways from here on
 
+    def hop_headers(
+        self, request_headers: dict[str, str], hop_url: str, first_url: str, *, first_hop: bool
+    ) -> dict[str, str]:
+        """The headers to send for one hop of a request (see the module docstring)."""
+        cross_origin = origin_of(hop_url) != origin_of(first_url)
+        headers: dict[str, str] = {}
+        for name, value in request_headers.items():
+            lowered = name.lower()
+            if lowered in _TRANSPORT_HEADERS:
+                continue
+            if lowered == "cookie" and not first_hop:
+                continue  # the cookie jar supplies the right cookies for this URL
+            if cross_origin and lowered in _ORIGIN_BOUND_HEADERS:
+                continue
+            headers[lowered] = value
+        if self._auth is not None:
+            headers.update(self._auth.headers_for(hop_url))
+        return headers
+
     async def _fetch_checking_redirects(self, route: Route, url: str) -> None:
         method = route.request.method
+        request_headers = route.request.headers
         current = url
-        for _ in range(MAX_REDIRECTS + 1):
-            if current == url:
-                response = await route.fetch(max_redirects=0)
+        for hop in range(MAX_REDIRECTS + 1):
+            # Headers are rebuilt for every hop, so credentials meant for one origin
+            # never reach another (route.fetch would otherwise reuse the first hop's).
+            headers = self.hop_headers(request_headers, current, url, first_hop=hop == 0)
+            if hop == 0:
+                response = await route.fetch(headers=headers, max_redirects=0)
             else:
-                response = await route.fetch(url=current, method=method, max_redirects=0)
+                response = await route.fetch(
+                    url=current, method=method, headers=headers, max_redirects=0
+                )
             location = response.headers.get("location")
             if response.status not in _REDIRECT_STATUSES or not location:
                 await route.fulfill(response=response)

@@ -66,6 +66,43 @@ Environment options apply to that render's own browser context only.
 
 `from_url` raises `RenderError` if the page itself returns HTTP 400 or above.
 
+### Rendering pages behind a login
+
+```python
+from dravenpdf import RenderAuth, Cookie, StorageState
+
+auth = RenderAuth(
+    cookies=[Cookie(name="session", value=session_id, url="https://app.example.com")],
+    storage_state=StorageState.model_validate(saved_state),   # Playwright's storage_state() JSON
+    headers={"https://api.example.com": {"Authorization": f"Bearer {token}"}},
+)
+doc = await r.from_url("https://app.example.com/reports/42", auth=auth)
+doc = renderer.from_url(url, auth=auth)                         # sync Renderer too
+```
+
+- **Cookies** (`url`, or `domain` + `path`; `expires`, `http_only`, `secure`,
+  `same_site`) and **storage state** (cookies plus `localStorage` per origin, in
+  Playwright's own format) go into the render's fresh browser context before the first
+  navigation. The browser applies its normal cookie rules.
+- **Headers** are keyed by exact origin (scheme, host, port; default ports optional).
+  The request guard adds them to every request and redirect hop for that origin only:
+  images, fonts and API calls on the same origin get them; other origins don't.
+- **Redirects:** headers are rebuilt per hop. After the first hop the cookie jar
+  supplies the cookies for each URL, `Authorization` is dropped once a redirect leaves
+  the original origin (also when the page's own script set it), and a second origin
+  only receives headers configured for it. Every hop still passes the SSRF checks:
+  configuring headers for an origin does not allowlist it.
+- **Isolation:** every render gets its own context; a later render starts logged out.
+- **Secrets:** all values are `SecretStr`, masked in `repr`, `str`, logs and JSON.
+  Validation errors don't show them (use `errors(include_input=False)` if you inspect
+  `ValidationError.errors()`). The guard strips Playwright's call log, which lists
+  request headers, from anything it logs or raises.
+- `Cookie`, `Host`, `Content-Length` and connection headers can't be configured; use
+  `cookies` / `storage_state` for cookies. Configured headers aren't added to
+  WebSocket connections.
+- Limits: 200 cookies, 50 origins, 30 headers per origin, 8 KiB per header value,
+  1 MiB of secret values in total.
+
 ### Preparing the page (Python only)
 
 Every `from_*` method on `AsyncRenderer` takes `prepare`, an async function called
@@ -79,7 +116,8 @@ doc = await r.from_url("https://dashboard.example/report", prepare=expand_all)
 ```
 
 It runs under the render deadline, and the SSRF guard still applies to anything it
-loads. It isn't available over HTTP or on the sync `Renderer`.
+loads. It runs after the first navigation, so use `auth` (above), not `prepare`, to
+log in. It isn't available over HTTP or on the sync `Renderer`.
 
 ### Render reports
 

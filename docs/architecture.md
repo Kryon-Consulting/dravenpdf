@@ -123,6 +123,12 @@ DravenPdfError
   rendered document (deduplicated: a 404 stylesheet that Chromium also aborts is listed
   once; Chromium's own "Failed to load resource" console lines and guard blocks are
   filtered). Before printing, the renderer calls `check()` for the strict options.
+- **`auth.py`**: `RenderAuth` (cookies, storage state, per-origin headers) with
+  validation and `SecretStr` values. The renderer passes the localStorage part as the
+  context's `storage_state`, adds cookies with `add_cookies` before any page exists,
+  and hands the headers to the guard.
+- **`_redact.py`**: `safe_message()` strips Playwright's call log (which lists request
+  headers, including credentials) from anything logged or raised.
 - **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
   and `http(s)` only when the host resolves to a public IP (or is on the
   allowlist). It blocks private, loopback, link-local, CGNAT and multicast addresses,
@@ -130,7 +136,10 @@ DravenPdfError
   inside `file_root`, which `from_file` sets to the rendered file's folder.
   Playwright does not call route handlers for redirect hops, so the guard fetches
   HTTP(S) requests itself (`route.fetch(max_redirects=0)`), checks each redirect
-  target, and fulfills the browser with the final response. If that fetch fails, the
+  target, and fulfills the browser with the final response. Headers are rebuilt for
+  every hop (`hop_headers`): the browser's `Cookie` header only on the first hop (the
+  jar supplies cookies for later URLs), `Authorization` dropped once a redirect leaves
+  the original origin, and `RenderAuth` headers added only for their exact origin. If that fetch fails, the
   request is aborted as a network error (never left unanswered, which would hold the
   render until its deadline). WebSockets are routed separately
   (`context.route_web_socket`) and checked with the same host rules; blocked ones are
