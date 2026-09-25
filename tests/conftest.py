@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 
 import pikepdf
@@ -14,6 +15,11 @@ import pypdfium2 as pdfium
 import pytest
 
 from dravenpdf import AsyncRenderer, PdfDocument
+from dravenpdf.render.pool import DEFAULT_LAUNCH_ARGS, BrowserPool
+
+if TYPE_CHECKING:
+    from https_fixture import HttpsSites
+
 
 SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
@@ -207,6 +213,28 @@ def server() -> Iterator[Server]:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.fixture
+def https_sites(tmp_path_factory: pytest.TempPathFactory) -> Iterator[HttpsSites]:
+    """Two HTTPS sites on one loopback server, with disposable TLS material."""
+    from https_fixture import serve_https
+
+    with serve_https(tmp_path_factory.mktemp("cookie-https")) as sites:
+        yield sites
+
+
+@pytest.fixture
+async def test_browser_pool(https_sites: HttpsSites) -> AsyncIterator[BrowserPool]:
+    """A test-only Chromium with local test hosts and trust for the fixture leaf."""
+    args = (
+        *DEFAULT_LAUNCH_ARGS,
+        "--host-resolver-rules=MAP a.test 127.0.0.1,MAP b.test 127.0.0.1",
+        f"--ignore-certificate-errors-spki-list={https_sites.spki_hash}",
+        "--no-proxy-server",
+    )
+    async with BrowserPool(launch_args=args) as pool:
+        yield pool
 
 
 # ---------------------------------------------------------------- renderers
