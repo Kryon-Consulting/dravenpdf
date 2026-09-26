@@ -120,7 +120,8 @@ class ProxyAddon:
     def _deny(self, flow: http.HTTPFlow, kind: str, target: str, reason: str) -> None:
         # Install the response first: an event-channel failure must not let traffic through.
         status = 407 if reason == "credential" else 502 if kind == "fatal" else 403
-        flow.response = http.Response.make(status, b"blocked by dravenpdf")
+        headers = {"Proxy-Authenticate": 'Basic realm="dravenpdf"'} if status == 407 else {}
+        flow.response = http.Response.make(status, b"blocked by dravenpdf", headers)
         with suppress(BaseException):
             self._event(kind, target, reason)
 
@@ -177,6 +178,16 @@ class ProxyAddon:
             if tunnel is not None and tunnel != (host, port):
                 raise PolicyViolation("CONNECT authority mismatch")
             url = request.pretty_url
+            if url.startswith("http://proxy.dravenpdf.invalid/__sync/"):
+                token = url.removeprefix("http://proxy.dravenpdf.invalid/__sync/")
+                if not token or "/" in token or "?" in token or "#" in token:
+                    raise PolicyViolation("malformed sync probe")
+                self._event("sync", token, "")
+                flow.response = http.Response.make(204, b"")
+                return
+            if url == "http://proxy.dravenpdf.invalid/__ready":
+                flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
+                return
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
                 found = self.bundle.lookup(url)

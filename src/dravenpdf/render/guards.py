@@ -1,40 +1,12 @@
-"""Request filtering for renders (SSRF protection).
+"""Shared render network policy and Chromium's local-file guard.
 
-Every request a rendered page makes over HTTP(S) goes through :class:`RequestGuard`.
-By default only hosts that resolve to public IP addresses are allowed; an optional
-allowlist narrows that further (and is also how you opt specific internal hosts in).
+Every network request is checked by the per-render mitmproxy addon before reaching
+its destination. This module freezes a policy snapshot for that process and keeps
+Playwright's local-file root restriction, which HTTP proxies cannot enforce.
+Chromium redirect chains are observed to preserve the ten-redirect render outcome.
 
-Redirects need special care: Playwright only calls a route handler for the first URL
-of a redirect chain, so a public URL could redirect the browser to an internal one
-unseen. The guard therefore fetches HTTP(S) requests itself with redirects turned
-off, checks every hop, and hands the browser only the final response.
-
-WebSockets are routed separately by Playwright; the guard checks ``ws://`` and
-``wss://`` URLs with the same host rules (as ``http``/``https``) and closes the ones
-it blocks before any connection is made.
-
-Credentials: when a render has :class:`~dravenpdf.render.auth.RenderAuth` headers,
-the guard adds them per hop, only when that hop's exact origin (scheme, host, port)
-is configured. Headers are rebuilt for every hop. The first hop carries exactly the
-``Cookie`` header Chromium chose, or an empty one: without it, ``route.fetch`` would
-add every stored cookie for the URL and skip SameSite, sending a page on another site
-cookies Chromium withheld. After the first hop the browser's ``Cookie`` header is
-dropped (Playwright then attaches the stored cookies for the new URL, without
-SameSite), and ``Authorization`` is dropped once a redirect leaves the original
-origin, as browsers do. So one origin's credentials never follow a redirect to another.
-
-If the guard's own fetch fails (connection refused, DNS failure, reset), the request
-is aborted as a network error, so the page sees a failed load instead of a request
-that never finishes and holds the render until its deadline.
-
-``file://`` URLs are blocked, except inside ``file_root`` (set by ``from_file`` to the
-rendered file's folder, so its relative assets load but ``/etc/passwd`` does not).
-Chromium also refuses ``file://`` loads from pages that are not ``file://`` pages.
-
-Known limitation: the IP check and the real connection resolve DNS separately, so
-a hostile DNS server could answer differently the second time (DNS rebinding).
-Deployments that render untrusted content should also restrict outbound traffic
-at the network level.
+The DNS check and the upstream connection resolve separately; deployments rendering
+untrusted content should also restrict outbound network traffic.
 """
 
 from __future__ import annotations
@@ -45,15 +17,13 @@ import logging
 import os
 import socket
 from collections.abc import Awaitable, Callable, Iterable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from playwright.async_api import BrowserContext, Route, WebSocketRoute
+from playwright.async_api import BrowserContext, Page, Route, WebSocket
 
 from dravenpdf.errors import BlockedRequestError
-from dravenpdf.render._redact import safe_message
 from dravenpdf.render.auth import origin_of
 
 if TYPE_CHECKING:
@@ -198,6 +168,8 @@ class RequestGuard:
         )
         self._file_root = None if file_root is None else os.path.realpath(file_root)
         self.blocked: list[tuple[str, str]] = []
+        self._redirect_sources: dict[str, str] = {}
+        self._observed_urls: dict[str, str] = {}
 
     @property
     def checks_requests(self) -> bool:
@@ -267,40 +239,54 @@ class RequestGuard:
             raise BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
 
     async def install(self, context: BrowserContext) -> None:
-        """Route every request and WebSocket the context makes through this guard."""
-        if self.checks_requests:
-            await context.route("**/*", self._handle)
-            await context.route_web_socket(lambda _url: True, self._handle_websocket)
+        """Keep local-file limits and observe redirects; the proxy guards network."""
+        if self._file_root is not None:
+            await context.route("**/*", self._handle_local)
+        context.on("request", self._observe_request)
 
-    async def _handle(self, route: Route) -> None:
+    def observe_page(self, page: Page) -> None:
+        page.on("websocket", self._observe_websocket)
+
+    def _observe_websocket(self, ws: WebSocket) -> None:
+        parts = urlsplit(ws.url)
+        if parts.hostname is not None:
+            port = parts.port or (443 if parts.scheme == "wss" else 80)
+            self._observed_urls[f"{parts.hostname}:{port}"] = ws.url
+
+    async def _handle_local(self, route: Route) -> None:
         url = route.request.url
-        try:
-            if self._bundle is not None and self._bundle.owns(url):
-                await self._bundle.fulfill(route)  # from memory, never the network
-                return
+        if urlsplit(url).scheme.lower() == "file":
             reason = await self._reason_to_block(url)
             if reason is not None:
                 self._block(url, reason)
                 await route.abort("blockedbyclient")
                 return
-            if urlsplit(url).scheme.lower() not in ("http", "https"):
-                await route.continue_()
-                return
-            await self._fetch_checking_redirects(route, url)
-        except Exception as exc:
-            # Our fetch failed (refused, reset, DNS...) or the page went away. Always
-            # answer the browser: an unanswered route hangs the render to its deadline.
-            logger.info("request to %s failed: %s", url, safe_message(exc))
-            with suppress(Exception):
-                await route.abort("failed")
+        await route.continue_()
 
-    async def _handle_websocket(self, ws: WebSocketRoute) -> None:
-        reason = await self._reason_to_block(ws.url)
-        if reason is not None:
-            self._block(ws.url, reason)
-            await ws.close(code=_POLICY_VIOLATION, reason="blocked by dravenpdf")
-            return
-        ws.connect_to_server()  # messages are forwarded both ways from here on
+    def _observe_request(self, request: object) -> None:
+        """Record chains past the public ten-redirect limit."""
+        from playwright.async_api import Request
+
+        assert isinstance(request, Request)
+        parent = request.redirected_from
+        origin = origin_of(request.url)
+        if origin is not None:
+            self._observed_urls[origin] = request.url
+        if parent is not None and origin is not None:
+            self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
+        hops = 0
+        while parent is not None:
+            hops += 1
+            parent = parent.redirected_from
+        if hops > MAX_REDIRECTS:
+            self._block(request.url, f"more than {MAX_REDIRECTS} redirects")
+
+    def add_proxy_blocks(self, events: list[tuple[str, str]]) -> None:
+        for target, reason in events:
+            source = self._redirect_sources.get(target)
+            if source is not None:
+                reason = f"{reason} (redirected from {source})"
+            self.blocked.append((self._observed_urls.get(target, target), reason))
 
     def hop_headers(
         self, request_headers: dict[str, str], hop_url: str, first_url: str, *, first_hop: bool
@@ -324,33 +310,3 @@ class RequestGuard:
         if self._auth is not None:
             headers.update(self._auth.headers_for(hop_url))
         return headers
-
-    async def _fetch_checking_redirects(self, route: Route, url: str) -> None:
-        method = route.request.method
-        request_headers = route.request.headers
-        current = url
-        for hop in range(MAX_REDIRECTS + 1):
-            # Headers are rebuilt for every hop, so credentials meant for one origin
-            # never reach another (route.fetch would otherwise reuse the first hop's).
-            headers = self.hop_headers(request_headers, current, url, first_hop=hop == 0)
-            if hop == 0:
-                response = await route.fetch(headers=headers, max_redirects=0)
-            else:
-                response = await route.fetch(
-                    url=current, method=method, headers=headers, max_redirects=0
-                )
-            location = response.headers.get("location")
-            if response.status not in _REDIRECT_STATUSES or not location:
-                await route.fulfill(response=response)
-                return
-            target = urljoin(current, location)
-            reason = await self._reason_to_block(target)
-            if reason is not None:
-                self._block(target, f"{reason} (redirected from {url})")
-                await route.abort("blockedbyclient")
-                return
-            if response.status == 303 or (response.status in (301, 302) and method == "POST"):
-                method = "GET"
-            current = target
-        self._block(url, f"more than {MAX_REDIRECTS} redirects")
-        await route.abort("blockedbyclient")

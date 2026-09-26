@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from dravenpdf import BlockedRequestError, RequestGuard
+from dravenpdf.render.auth import RenderAuth
 
 DNS = {
     "public.example": ["93.184.216.34"],
@@ -186,3 +187,15 @@ async def test_websocket_allowlist() -> None:
     await g.check("ws://localhost:9000/live")
     with pytest.raises(BlockedRequestError, match="allowlist"):
         await g.check("wss://public.example/")
+
+
+def test_proxy_policy_freezes_allowlist_and_exact_origin_headers() -> None:
+    auth = RenderAuth(headers={"https://public.example": {"X-Tenant": "secret-tenant"}})
+    g = guard(allowed_hosts=["public.example", "*.cdn.example"], auth=auth)
+
+    policy = g.proxy_policy("proxy-secret", 123.0)
+
+    assert policy.allowed_hosts == ["public.example", "*.cdn.example"]
+    assert policy.headers == {"https://public.example": {"x-tenant": "secret-tenant"}}
+    assert policy.credential == "proxy-secret"
+    assert policy.deadline == 123.0

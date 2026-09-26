@@ -40,7 +40,7 @@ class ProxyPolicy:
         return cls(**data)
 
 
-EventKind = Literal["ready", "alive", "blocked", "fatal"]
+EventKind = Literal["ready", "alive", "blocked", "fatal", "sync"]
 
 
 def send_event(fd: int, kind: EventKind, target: str = "", reason: str = "") -> None:

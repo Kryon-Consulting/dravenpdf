@@ -8,7 +8,9 @@ from typing import Any
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-from dravenpdf import BrowserPool, RenderError
+from dravenpdf import AsyncRenderer, BrowserPool, RenderError, RenderOptions, RenderTimeoutError
+from dravenpdf.render import renderer as renderer_module
+from dravenpdf.render._proxy_gate import ProxyGate
 
 
 class FakeContext:
@@ -114,8 +116,65 @@ async def test_deadline_covers_context_creation_without_leaking() -> None:
     browser = pool.browsers[0]
     assert len(browser.contexts) == 2
     assert all(c.closed for c in browser.contexts)  # the late one was closed on arrival
-    assert pool._current is not None
-    assert pool._current.active == 0
+    assert pool._current is None
+    assert not browser.connected
+
+
+async def test_cancelled_context_creation_returns_promptly_then_closes_orphan() -> None:
+    pool = FakePool()
+    pool.context_delay = 0.2
+    async with pool.context():
+        pass
+
+    async def open_context() -> None:
+        async with pool.context():
+            pass
+
+    task = asyncio.create_task(open_context())
+    await asyncio.sleep(0.05)
+    started = asyncio.get_running_loop().time()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert asyncio.get_running_loop().time() - started < 0.1
+
+    await asyncio.sleep(0.25)
+    browser = pool.browsers[0]
+    assert len(browser.contexts) == 2
+    assert browser.contexts[-1].closed
+
+
+async def test_stalled_context_does_not_delay_render_timeout_or_keep_proxy_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool()
+    pool.context_delay = 3600
+    pool._proxy_ca = object()  # type: ignore[assignment]
+
+    class FakeGate:
+        def __init__(self) -> None:
+            self.proxy_options = {"server": "http://127.0.0.1:1", "bypass": "<-loopback>"}
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    gate = FakeGate()
+
+    async def start(*_: Any) -> FakeGate:
+        return gate
+
+    monkeypatch.setattr(ProxyGate, "start", start)
+    monkeypatch.setattr(renderer_module, "_ORPHAN_PROXY_GRACE", 0.05)
+    renderer = AsyncRenderer(pool=pool)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(RenderTimeoutError):
+        await renderer.from_html("<p>hello</p>", RenderOptions(timeout_ms=50))
+    assert asyncio.get_running_loop().time() - started < 0.2
+    assert not gate.closed
+    assert pool._current is None  # a stalled Chromium is not reused
+    await asyncio.sleep(0.1)
+    assert gate.closed
 
 
 async def test_failed_launch_is_retried_by_the_next_caller() -> None:

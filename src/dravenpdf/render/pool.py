@@ -78,6 +78,7 @@ class BrowserPool:
         self._current: _Slot | None = None
         self._retired: list[_Slot] = []
         self._closing: set[asyncio.Task[None]] = set()
+        self._orphan_closures: set[asyncio.Task[None]] = set()
         self._waiting = 0
         self._active = 0
         self.launches = 0
@@ -89,6 +90,12 @@ class BrowserPool:
     @property
     def is_running(self) -> bool:
         return self._playwright is not None
+
+    @property
+    def proxy_ca(self) -> ProxyCA:
+        if self._proxy_ca is None:
+            raise RenderError("the browser pool is not running; call start() first")
+        return self._proxy_ca
 
     @property
     def active(self) -> int:
@@ -226,15 +233,26 @@ class BrowserPool:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            task.add_done_callback(self._close_orphan_context)
+            cleanup = asyncio.create_task(self._close_context_on_arrival(task))
+            self._orphan_closures.add(cleanup)
+            cleanup.add_done_callback(self._orphan_closures.discard)
+            # Do not place another render on a browser with a stalled context
+            # creation command. Its existing contexts may finish before closure.
+            if self._current is slot:
+                self._current = None
+                self._retire(slot)
             raise
 
-    def _close_orphan_context(self, task: asyncio.Task[BrowserContext]) -> None:
-        if task.cancelled() or task.exception() is not None:
+    async def _close_context_on_arrival(self, task: asyncio.Task[BrowserContext]) -> None:
+        try:
+            context = await task
+        except (Exception, asyncio.CancelledError):
             return
-        closing = asyncio.get_running_loop().create_task(self._close_context(task.result()))
-        self._closing.add(closing)
-        closing.add_done_callback(self._closing.discard)
+        await self._close_context(context)
+
+    def pending_context_closures(self) -> tuple[asyncio.Task[None], ...]:
+        """Late contexts whose cleanup must precede proxy teardown when possible."""
+        return tuple(self._orphan_closures)
 
     @staticmethod
     async def _close_context(ctx: BrowserContext) -> None:

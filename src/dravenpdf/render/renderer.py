@@ -18,6 +18,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.errors import AssetError, BlockedRequestError, RenderError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
+from dravenpdf.render._proxy_gate import ProxyGate, new_credential
 from dravenpdf.render._redact import safe_message
 from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.auth import RenderAuth
@@ -34,6 +35,7 @@ PageHook = Callable[[Page], Awaitable[None]]
 """An async function given the loaded page before printing (see ``prepare``)."""
 
 _HEAD_OPEN = re.compile(r"<head(\s[^>]*)?>", re.IGNORECASE)
+_ORPHAN_PROXY_GRACE = 2.0
 
 
 def inject_base_url(html: str, base_url: str) -> str:
@@ -89,6 +91,7 @@ class AsyncRenderer:
         self._allowed_hosts = None if allowed_hosts is None else list(allowed_hosts)
         self._allow_private = allow_private_network
         self._on_blocked = on_blocked
+        self._gate_closures: set[asyncio.Task[None]] = set()
 
     @property
     def is_running(self) -> bool:
@@ -101,6 +104,8 @@ class AsyncRenderer:
     async def close(self) -> None:
         if self._owns_pool:
             await self.pool.close()
+        if self._gate_closures:
+            await asyncio.gather(*self._gate_closures, return_exceptions=True)
 
     async def __aenter__(self) -> AsyncRenderer:
         await self.start()
@@ -283,44 +288,82 @@ class AsyncRenderer:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + opts.timeout_ms / 1000
         try:
-            async with (
-                asyncio.timeout_at(deadline),
-                self.pool.context(
-                    deadline=deadline,
-                    service_workers="block",
-                    accept_downloads=False,
-                    **context_options,
-                ) as ctx,
-            ):
+            async with asyncio.timeout_at(deadline):
+                gate = await ProxyGate.start(
+                    guard.proxy_policy(new_credential(), deadline), self.pool.proxy_ca, deadline
+                )
                 try:
-                    if auth is not None and auth.all_cookies():
-                        # Before any page exists, so even the first request carries them.
-                        await ctx.add_cookies(auth.playwright_cookies())  # type: ignore[arg-type]
-                    await guard.install(ctx)
-                    page = await ctx.new_page()
-                    collector.attach(page)
-                    page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
-                    await page.emulate_media(media=opts.media)
-                    await load(page)
-                    if prepare is not None:
-                        await prepare(page)  # e.g. expand sections, dismiss a banner
-                    await wait_until_ready(page, opts)
-                    if self._on_blocked == "fail":
-                        guard.raise_if_blocked()
-                    collector.check(
-                        fail_on_resource_errors=opts.fail_on_resource_errors,
-                        fail_on_page_errors=opts.fail_on_page_errors,
-                    )
-                    data = await page.pdf(**opts.to_pdf_kwargs())
-                except PlaywrightError as exc:
-                    if isinstance(exc, PlaywrightTimeoutError):
-                        raise
-                    if guard.blocked and self._on_blocked == "fail":
+                    async with self.pool.context(
+                        deadline=deadline,
+                        service_workers="block",
+                        accept_downloads=False,
+                        proxy=gate.proxy_options,
+                        **context_options,
+                    ) as ctx:
                         try:
-                            guard.raise_if_blocked()
-                        except BlockedRequestError as blocked:
-                            raise blocked from exc
-                    raise RenderError(f"render failed: {safe_message(exc)}") from exc
+                            if auth is not None and auth.all_cookies():
+                                await ctx.add_cookies(auth.playwright_cookies())  # type: ignore[arg-type]
+                            await guard.install(ctx)
+                            warmup = await ctx.new_page()
+                            try:
+                                proof = await warmup.goto(
+                                    "http://proxy.dravenpdf.invalid/__ready",
+                                    wait_until="domcontentloaded",
+                                )
+                                if proof is None or proof.status != 200:
+                                    raise RenderError("network proxy authentication failed")
+                            finally:
+                                await warmup.close()
+                            page = await ctx.new_page()
+                            collector.attach(page)
+                            guard.observe_page(page)
+                            page.set_default_timeout(max(1, (deadline - loop.time()) * 1000))
+                            await page.emulate_media(media=opts.media)
+                            await load(page)
+                            if prepare is not None:
+                                await prepare(page)
+                            await wait_until_ready(page, opts)
+                            await gate.synchronize()
+                            guard.add_proxy_blocks(gate.blocked)
+                            reported_blocks = len(gate.blocked)
+                            if self._on_blocked == "fail":
+                                guard.raise_if_blocked()
+                            collector.check(
+                                fail_on_resource_errors=opts.fail_on_resource_errors,
+                                fail_on_page_errors=opts.fail_on_page_errors,
+                            )
+                            data = await page.pdf(**opts.to_pdf_kwargs())
+                            await gate.synchronize()
+                            guard.add_proxy_blocks(gate.blocked[reported_blocks:])
+                            if self._on_blocked == "fail":
+                                guard.raise_if_blocked()
+                        except PlaywrightError as exc:
+                            if isinstance(exc, PlaywrightTimeoutError):
+                                raise
+                            await gate.synchronize()
+                            guard.add_proxy_blocks(gate.blocked)
+                            if guard.blocked and self._on_blocked == "fail":
+                                try:
+                                    guard.raise_if_blocked()
+                                except BlockedRequestError as blocked:
+                                    raise blocked from exc
+                            raise RenderError(f"render failed: {safe_message(exc)}") from exc
+                        except RenderError as exc:
+                            if isinstance(exc, BlockedRequestError):
+                                raise
+                            await gate.synchronize()
+                            guard.add_proxy_blocks(gate.blocked)
+                            if guard.blocked and self._on_blocked == "fail":
+                                guard.raise_if_blocked()
+                            raise
+                finally:
+                    pending = self.pool.pending_context_closures()
+                    if pending:
+                        closing = asyncio.create_task(self._close_gate_after_orphans(gate, pending))
+                        self._gate_closures.add(closing)
+                        closing.add_done_callback(self._gate_closures.discard)
+                    else:
+                        await gate.close()
         except (TimeoutError, PlaywrightTimeoutError) as exc:
             raise RenderTimeoutError(
                 f"render did not finish within {opts.timeout_ms} ms",
@@ -333,3 +376,12 @@ class AsyncRenderer:
         doc = await asyncio.to_thread(PdfDocument.from_bytes, data)
         doc.render_report = report
         return doc
+
+    @staticmethod
+    async def _close_gate_after_orphans(
+        gate: ProxyGate, pending: tuple[asyncio.Task[None], ...]
+    ) -> None:
+        try:
+            await asyncio.wait(pending, timeout=_ORPHAN_PROXY_GRACE)
+        finally:
+            await gate.close()
