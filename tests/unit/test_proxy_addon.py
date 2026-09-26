@@ -11,22 +11,23 @@ from types import SimpleNamespace
 import pytest
 from mitmproxy import connection, ctx, http, tcp, udp
 
-from dravenpdf.render._proxy_addon import ProxyAddon, _redirect_key
+from dravenpdf.render._proxy_addon import ProxyAddon
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
 
 
-@pytest.mark.parametrize(
-    ("target", "expected"),
-    [
-        ("HTTP://LOCALHOST:80/a/../chain?n=%7e#fragment", "http://localhost:80/chain?n=%7E"),
-        ("https://EXAMPLE.COM:443/a/./chain", "https://example.com:443/a/chain"),
-        ("http://[::1]/a", "http://[::1]:80/a"),
-        ("http://täst.de/x", "http://xn--tst-qla.de:80/x"),
-        ("http://LOCALHOST/a/%2e%2e/chain", "http://localhost:80/chain"),
-    ],
-)
-def test_redirect_keys_normalize_browser_url_variants(target: str, expected: str) -> None:
-    assert _redirect_key(target) == expected
+async def test_redirect_budget_blocks_eleventh_response_across_distinct_targets() -> None:
+    proxy, events = addon(allowed_hosts=["public.example"])
+    for hop in range(11):
+        request = flow("GET", f"https://public.example/unique-{hop}", host="public.example")
+        await proxy.requestheaders(request)
+        assert request.response is None
+        request.response = http.Response.make(302, b"", {"Location": f"/different-{hop + 1}\\next"})
+        proxy.response(request)
+        if hop < 10:
+            assert request.response.status_code == 302
+        else:
+            assert request.response.status_code == 403
+            assert events[-1]["reason"] == "redirect limit"
 
 
 async def resolve(host: str) -> list[str]:

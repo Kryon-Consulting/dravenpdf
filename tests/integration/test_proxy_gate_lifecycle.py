@@ -228,11 +228,11 @@ async def test_concurrent_renders_keep_headers_and_blocks_separate(server: Serve
 @pytest.mark.browser
 @pytest.mark.parametrize("fragment", [False, True])
 @pytest.mark.parametrize("absolute_uppercase", [False, True])
-@pytest.mark.parametrize("encoded_dot", [False, True])
+@pytest.mark.parametrize("redirect_path", ["plain", "encoded_dot", "backslash"])
 async def test_eleventh_redirect_destination_gets_zero_bytes_even_when_skipping(
     fragment: bool,
     absolute_uppercase: bool,
-    encoded_dot: bool,
+    redirect_path: str,
 ) -> None:
     seen: list[int] = []
 
@@ -245,7 +245,11 @@ async def test_eleventh_redirect_destination_gets_zero_bytes_even_when_skipping(
             seen.append(hop)
             if hop < 11:
                 self.send_response(302)
-                path = "/a/%2e%2e/chain" if encoded_dot else "/chain"
+                path = {
+                    "plain": "/chain",
+                    "encoded_dot": "/a/%2e%2e/chain",
+                    "backslash": "/a\\..\\chain",
+                }[redirect_path]
                 location = f"{path}?n={hop + 1}" + ("#fragment" if fragment else "")
                 if absolute_uppercase:
                     location = f"http://LOCALHOST:{httpd.server_port}{location}"

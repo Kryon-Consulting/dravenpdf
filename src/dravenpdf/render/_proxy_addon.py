@@ -5,13 +5,11 @@ from __future__ import annotations
 import base64
 import hmac
 import os
-import posixpath
-import re
 import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from mitmproxy import ctx, http, tcp, udp
 
@@ -34,34 +32,6 @@ class CredentialRejected(Exception):
 
 class DeadlineExpired(TimeoutError):
     pass
-
-
-_ESCAPE = re.compile(r"%([0-9a-fA-F]{2})")
-
-
-def _redirect_key(url: str) -> str:
-    """Use one browser-compatible key for Location targets and actual requests."""
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    host = (parts.hostname or "").lower().rstrip(".")
-    if scheme not in ("http", "https") or not host:
-        raise PolicyViolation("invalid redirect target")
-    try:
-        port = parts.port or (443 if scheme == "https" else 80)
-        if ":" not in host:
-            host = host.encode("idna").decode("ascii")
-    except (ValueError, UnicodeError):
-        raise PolicyViolation("invalid redirect target") from None
-    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
-    path = _ESCAPE.sub(lambda match: f"%{match[1].upper()}", parts.path or "/")
-    # Chromium treats percent-encoded dots as dot segments for HTTP(S) URLs.
-    path = path.replace("%2E", ".")
-    trailing_slash = path.endswith(("/", "/.", "/.."))
-    path = "/" + posixpath.normpath(path).lstrip("/")
-    if trailing_slash and not path.endswith("/"):
-        path += "/"
-    query = _ESCAPE.sub(lambda match: f"%{match[1].upper()}", parts.query)
-    return urlunsplit((scheme, authority, path, query, ""))
 
 
 def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int]:
@@ -106,8 +76,9 @@ class ProxyAddon:
         self.tunnels: dict[str, tuple[str, int]] = {}
         self.authorized: set[str] = set()
         self.control_alive = True
-        self.redirect_depth: dict[str, int] = {}
-        self.flow_depth: dict[str, int] = {}
+        # A render-wide budget is conservative, but does not depend on guessing
+        # how Chromium will resolve Location into its next request URL.
+        self.redirects = 0
 
     def running(self) -> None:
         """Announce readiness only with the pre-connection security options in force."""
@@ -220,11 +191,6 @@ class ProxyAddon:
             if url == "http://proxy.dravenpdf.invalid/__ready":
                 flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
                 return
-            key = _redirect_key(url)
-            depth = self.redirect_depth.get(key, 0)
-            if depth > MAX_REDIRECTS:
-                raise PolicyViolation("redirect limit")
-            self.flow_depth[flow.id] = depth
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
                 found = self.bundle.lookup(url)
@@ -249,19 +215,18 @@ class ProxyAddon:
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
 
-    def responseheaders(self, flow: http.HTTPFlow) -> None:
+    def response(self, flow: http.HTTPFlow) -> None:
         try:
             response = flow.response
-            source = flow.request.pretty_url
-            source_key = _redirect_key(source)
-            depth = self.flow_depth.pop(flow.id, self.redirect_depth.get(source_key, 0))
             if response is None or response.status_code not in {301, 302, 303, 307, 308}:
                 return
-            location = response.headers.get("location")
-            if not location:
+            if not response.headers.get("location"):
                 return
-            target = _redirect_key(urljoin(source, location))
-            self.redirect_depth[target] = max(self.redirect_depth.get(target, 0), depth + 1)
+            self.redirects += 1
+            if self.redirects > MAX_REDIRECTS:
+                # Replace the redirect before Chromium sees it. Hop 11 cannot
+                # become an upstream request even if it parses Location oddly.
+                self._deny(flow, "blocked", self._target(flow), "redirect limit")
         except BaseException:
             self._deny(flow, "fatal", "unknown", "proxy failure")
 
