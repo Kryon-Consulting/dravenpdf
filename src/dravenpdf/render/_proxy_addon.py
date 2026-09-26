@@ -22,12 +22,23 @@ from dravenpdf.render.guards import NetworkPolicy, Resolver, resolve_host
 EventSink = Callable[[dict[str, str]], None]
 
 
+class PolicyViolation(ValueError):
+    pass
+
+
+class CredentialRejected(Exception):
+    pass
+
+
 def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int]:
-    parts = urlsplit("//" + value)
+    try:
+        parts = urlsplit("//" + value)
+        port = parts.port if parts.port is not None else default_port
+    except ValueError:
+        raise PolicyViolation("malformed authority") from None
     if parts.username or parts.password or parts.path or parts.query or parts.fragment:
-        raise ValueError("malformed authority")
+        raise PolicyViolation("malformed authority")
     host = (parts.hostname or "").lower().rstrip(".")
-    port = parts.port if parts.port is not None else default_port
     if (
         not host
         or any(ord(char) <= 32 for char in host)
@@ -35,7 +46,7 @@ def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int
         or port < 1
         or port > 65535
     ):
-        raise ValueError("malformed authority")
+        raise PolicyViolation("malformed authority")
     return host, port
 
 
@@ -87,12 +98,17 @@ class ProxyAddon:
             self.control_alive = False
             raise
 
+    def _check_control(self) -> None:
+        if not self.control_alive:
+            raise RuntimeError("control channel closed")
+        self._event("alive", "", "")
+
     @staticmethod
     def _target(flow: http.HTTPFlow, *, connect: bool = False) -> str:
         if connect:
             try:
                 host, port = _authority(flow.request.authority)
-            except ValueError:
+            except PolicyViolation:
                 return "unknown"
             return f"{host}:{port}"
         return origin_of(flow.request.pretty_url) or "unknown"
@@ -110,28 +126,29 @@ class ProxyAddon:
             return
         token = base64.b64encode(f"dravenpdf:{self.policy.credential}".encode()).decode()
         if not hmac.compare_digest(supplied, f"Basic {token}"):
-            raise PermissionError("credential")
+            raise CredentialRejected
         self.authorized.add(flow.client_conn.id)
 
     async def http_connect(self, flow: http.HTTPFlow) -> None:
         target = "unknown"
         try:
             target = self._target(flow, connect=True)
-            if not self.control_alive:
-                raise RuntimeError("control channel closed")
+            self._check_control()
             if flow.client_conn.transport_protocol != "tcp":
-                raise ValueError("unsupported transport")
+                raise PolicyViolation("unsupported transport")
             if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
                 raise TimeoutError("deadline")
             self._check_credential(flow)
             host, port = _authority(flow.request.authority)
             if (flow.request.host.lower().rstrip("."), flow.request.port) != (host, port):
-                raise ValueError("CONNECT authority mismatch")
+                raise PolicyViolation("CONNECT authority mismatch")
             await self.network.check(f"https://{flow.request.authority}/")
             self.tunnels[flow.client_conn.id] = (host, port)
-        except (BlockedRequestError, PermissionError, ValueError, TimeoutError) as exc:
-            reason = "credential" if isinstance(exc, PermissionError) else "policy"
+        except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
+            reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
             self._deny(flow, "blocked", target, reason)
+        except TimeoutError:
+            self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
 
@@ -139,22 +156,22 @@ class ProxyAddon:
         target = "unknown"
         try:
             target = self._target(flow)
-            if not self.control_alive:
-                raise RuntimeError("control channel closed")
+            self._check_control()
             request = flow.request
             if flow.client_conn.transport_protocol != "tcp":
-                raise ValueError("unsupported transport")
+                raise PolicyViolation("unsupported transport")
             if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
                 raise TimeoutError("deadline")
             self._check_credential(flow)
             if request.scheme not in ("http", "https"):
-                raise ValueError("unsupported scheme")
-            host, port = _authority(request.host_header or "", default_port=request.port)
+                raise PolicyViolation("unsupported scheme")
+            default_port = 80 if request.scheme == "http" else 443
+            host, port = _authority(request.host_header or "", default_port=default_port)
             if (request.host.lower().rstrip("."), request.port) != (host, port):
-                raise ValueError("Host authority mismatch")
+                raise PolicyViolation("Host authority mismatch")
             tunnel = self.tunnels.get(flow.client_conn.id)
             if tunnel is not None and tunnel != (host, port):
-                raise ValueError("CONNECT authority mismatch")
+                raise PolicyViolation("CONNECT authority mismatch")
             url = request.pretty_url
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
@@ -172,18 +189,23 @@ class ProxyAddon:
             for name, value in self.policy.headers.get(origin_of(url) or "", {}).items():
                 if name.lower() != "cookie":
                     request.headers[name] = value
-        except (BlockedRequestError, PermissionError, ValueError, TimeoutError) as exc:
-            reason = "credential" if isinstance(exc, PermissionError) else "policy"
+        except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
+            reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
             self._deny(flow, "blocked", target, reason)
+        except TimeoutError:
+            self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
         # The WebSocket handshake has already passed requestheaders.
         try:
-            if not self.control_alive or flow.client_conn.id not in self.authorized:
+            self._check_control()
+            if flow.client_conn.id not in self.authorized:
                 raise RuntimeError("unauthorized WebSocket")
         except BaseException:
+            with suppress(BaseException):
+                flow.kill()  # type: ignore[no-untyped-call]
             self._deny(flow, "fatal", "unknown", "proxy failure")
 
     def tcp_start(self, flow: tcp.TCPFlow) -> None:

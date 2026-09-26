@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class ProxyPolicy:
     allowed_hosts: list[str] | None
     allow_private_network: bool
@@ -18,6 +18,9 @@ class ProxyPolicy:
     headers: dict[str, dict[str, str]]
     credential: str
     deadline: float | None
+
+    def __repr__(self) -> str:
+        return "ProxyPolicy(<redacted>)"
 
     def write(self, path: Path) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -37,7 +40,7 @@ class ProxyPolicy:
         return cls(**data)
 
 
-EventKind = Literal["ready", "blocked", "fatal"]
+EventKind = Literal["ready", "alive", "blocked", "fatal"]
 
 
 def send_event(fd: int, kind: EventKind, target: str = "", reason: str = "") -> None:

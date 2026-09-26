@@ -138,6 +138,8 @@ class NetworkPolicy:
             return None
         try:
             addresses = await self.resolve(host)
+        except PermissionError:
+            raise
         except OSError as exc:
             return f"could not resolve host ({exc})"
         private = [address for address in addresses if not _is_public(address)]
