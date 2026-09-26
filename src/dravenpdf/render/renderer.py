@@ -333,10 +333,6 @@ class AsyncRenderer:
                                 fail_on_page_errors=opts.fail_on_page_errors,
                             )
                             data = await page.pdf(**opts.to_pdf_kwargs())
-                            await gate.synchronize()
-                            guard.add_proxy_blocks(gate.blocked[reported_blocks:])
-                            if self._on_blocked == "fail":
-                                guard.raise_if_blocked()
                         except PlaywrightError as exc:
                             if isinstance(exc, PlaywrightTimeoutError):
                                 raise
@@ -356,6 +352,12 @@ class AsyncRenderer:
                             if guard.blocked and self._on_blocked == "fail":
                                 guard.raise_if_blocked()
                             raise
+                    # Context teardown can finish or abort network flows. Drain those
+                    # events while the proxy is still alive before final reporting.
+                    await gate.synchronize()
+                    guard.add_proxy_blocks(gate.blocked[reported_blocks:])
+                    if self._on_blocked == "fail":
+                        guard.raise_if_blocked()
                 finally:
                     pending = self.pool.pending_context_closures()
                     if pending:

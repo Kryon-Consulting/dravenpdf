@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from mitmproxy import ctx, http, tcp, udp
 
@@ -17,7 +17,7 @@ from dravenpdf.errors import BlockedRequestError
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
 from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.auth import origin_of
-from dravenpdf.render.guards import NetworkPolicy, Resolver, resolve_host
+from dravenpdf.render.guards import MAX_REDIRECTS, NetworkPolicy, Resolver, resolve_host
 
 EventSink = Callable[[dict[str, str]], None]
 
@@ -76,6 +76,8 @@ class ProxyAddon:
         self.tunnels: dict[str, tuple[str, int]] = {}
         self.authorized: set[str] = set()
         self.control_alive = True
+        self.redirect_depth: dict[str, int] = {}
+        self.flow_depth: dict[str, int] = {}
 
     def running(self) -> None:
         """Announce readiness only with the pre-connection security options in force."""
@@ -188,6 +190,10 @@ class ProxyAddon:
             if url == "http://proxy.dravenpdf.invalid/__ready":
                 flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
                 return
+            depth = self.redirect_depth.get(url, 0)
+            if depth > MAX_REDIRECTS:
+                raise PolicyViolation("redirect limit")
+            self.flow_depth[flow.id] = depth
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
                 found = self.bundle.lookup(url)
@@ -211,6 +217,22 @@ class ProxyAddon:
             self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        try:
+            response = flow.response
+            source = flow.request.pretty_url
+            depth = self.flow_depth.pop(flow.id, self.redirect_depth.get(source, 0))
+            if response is None or response.status_code not in {301, 302, 303, 307, 308}:
+                return
+            location = response.headers.get("location")
+            if not location:
+                return
+            # Fragments are browser-local and absent from the next HTTP request.
+            target = urlsplit(urljoin(source, location))._replace(fragment="").geturl()
+            self.redirect_depth[target] = max(self.redirect_depth.get(target, 0), depth + 1)
+        except BaseException:
+            self._deny(flow, "fatal", "unknown", "proxy failure")
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
         # The WebSocket handshake has already passed requestheaders.

@@ -20,6 +20,7 @@ from dravenpdf.render._proxy_protocol import ProxyPolicy
 
 _START_ATTEMPTS = 3
 _START_LIMIT = 15.0
+_STOP_GRACE = 2.0
 
 
 def _free_loopback_port() -> int:
@@ -45,6 +46,7 @@ class ProxyGate:
         self._events = asyncio.create_task(self._read_events())
         self._ready = asyncio.Event()
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._fatal_reason: str | None = None
         self._port = port
         self._sync_waiters: dict[str, asyncio.Future[None]] = {}
@@ -222,22 +224,28 @@ class ProxyGate:
             raise RenderError("network proxy failed")
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._process.returncode is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), 2)
-            except TimeoutError:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._finish_close())
+        await asyncio.shield(self._close_task)
+
+    async def _finish_close(self) -> None:
+        try:
+            if self._process.returncode is None:
                 with suppress(ProcessLookupError):
-                    self._process.kill()
-                await self._process.wait()
-        self._transport.close()
-        self._events.cancel()
-        await asyncio.gather(self._events, return_exceptions=True)
-        self._directory.cleanup()
+                    self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), _STOP_GRACE)
+                except TimeoutError:
+                    with suppress(ProcessLookupError):
+                        self._process.kill()
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(self._process.wait(), _STOP_GRACE)
+        finally:
+            self._transport.close()
+            self._events.cancel()
+            await asyncio.gather(self._events, return_exceptions=True)
+            self._directory.cleanup()
+            self._closed = True
 
 
 def new_credential() -> str:

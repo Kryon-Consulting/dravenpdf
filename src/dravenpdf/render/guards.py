@@ -272,6 +272,10 @@ class RequestGuard:
         origin = origin_of(request.url)
         if origin is not None:
             self._observed_urls[origin] = request.url
+            parts = urlsplit(request.url)
+            if parts.hostname is not None:
+                port = parts.port or (443 if parts.scheme == "https" else 80)
+                self._observed_urls[f"{parts.hostname}:{port}"] = request.url
         if parent is not None and origin is not None:
             self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
         hops = 0
@@ -283,10 +287,13 @@ class RequestGuard:
 
     def add_proxy_blocks(self, events: list[tuple[str, str]]) -> None:
         for target, reason in events:
+            observed = self._observed_urls.get(target, target)
             source = self._redirect_sources.get(target)
+            if source is None:
+                source = self._redirect_sources.get(origin_of(observed) or "")
             if source is not None:
                 reason = f"{reason} (redirected from {source})"
-            self.blocked.append((self._observed_urls.get(target, target), reason))
+            self.blocked.append((observed, reason))
 
     def hop_headers(
         self, request_headers: dict[str, str], hop_url: str, first_url: str, *, first_hop: bool

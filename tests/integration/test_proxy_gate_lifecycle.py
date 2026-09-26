@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import threading
+from contextlib import suppress
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.async_api import Page
 
 from conftest import Server, requests_tagged
-from dravenpdf import AsyncRenderer, RenderAuth, RenderError
+from dravenpdf import AsyncRenderer, BlockedRequestError, RenderAuth, RenderError
 from dravenpdf.render._proxy_ca import ProxyCA
 from dravenpdf.render._proxy_gate import ProxyGate
 from dravenpdf.render.guards import RequestGuard
@@ -219,3 +223,86 @@ async def test_concurrent_renders_keep_headers_and_blocks_separate(server: Serve
     assert requests_tagged("render-block") == []
     assert [h["x-tenant"] for _, _, h in requests_tagged("render-a")] == ["render-a"]
     assert [h["x-tenant"] for _, _, h in requests_tagged("render-b")] == ["render-b"]
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("fragment", [False, True])
+async def test_eleventh_redirect_destination_gets_zero_bytes_even_when_skipping(
+    fragment: bool,
+) -> None:
+    seen: list[int] = []
+
+    class Redirects(BaseHTTPRequestHandler):
+        def log_message(self, *_args: object) -> None:
+            pass
+
+        def do_GET(self) -> None:
+            hop = int(parse_qs(urlsplit(self.path).query)["n"][0])
+            seen.append(hop)
+            if hop < 11:
+                self.send_response(302)
+                location = f"/chain?n={hop + 1}" + ("#fragment" if fragment else "")
+                self.send_header("Location", location)
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<p>too far</p>")
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Redirects)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with AsyncRenderer(allow_private_network=True, on_blocked="skip") as renderer:
+            with suppress(RenderError):
+                await renderer.from_url(f"http://127.0.0.1:{httpd.server_port}/chain?n=0")
+        assert seen == list(range(11))
+    finally:
+        httpd.shutdown()
+        thread.join()
+        httpd.server_close()
+
+
+@pytest.mark.browser
+async def test_blocked_https_connect_reports_chromium_url() -> None:
+    url = "https://127.0.0.1:9443/private.png?case=connect"
+    async with AsyncRenderer(allowed_hosts=["localhost"]) as renderer:
+        with pytest.raises(BlockedRequestError) as blocked:
+            await renderer.from_html(f'<img src="{url}">')
+    assert blocked.value.url == url
+
+    async with AsyncRenderer(allowed_hosts=["localhost"], on_blocked="skip") as renderer:
+        doc = await renderer.from_html(f'<img src="{url}">')
+    assert doc.render_report is not None
+    assert [target for target, _ in doc.render_report.blocked] == [url]
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("on_blocked", ["fail", "skip"])
+async def test_final_block_check_runs_after_context_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    on_blocked: str,
+) -> None:
+    renderer = AsyncRenderer(on_blocked=on_blocked)  # type: ignore[arg-type]
+    original = ProxyGate.synchronize
+    calls = 0
+
+    async def late_block(gate: ProxyGate) -> None:
+        nonlocal calls
+        await original(gate)
+        calls += 1
+        if calls == 3:  # startup probe, pre-PDF check, final close check
+            assert renderer.pool.active == 0
+            assert gate._process.returncode is None
+            gate.blocked.append(("http://127.0.0.1:9", "policy"))
+
+    monkeypatch.setattr(ProxyGate, "synchronize", late_block)
+    async with renderer:
+        if on_blocked == "fail":
+            with pytest.raises(BlockedRequestError):
+                await renderer.from_html("<p>hello</p>")
+        else:
+            doc = await renderer.from_html("<p>hello</p>")
+            assert doc.render_report is not None
+            assert doc.render_report.blocked == [("http://127.0.0.1:9", "policy")]
+    assert calls == 3
