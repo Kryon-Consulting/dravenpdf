@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import hmac
 import os
+import posixpath
+import re
 import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from mitmproxy import ctx, http, tcp, udp
 
@@ -32,6 +34,34 @@ class CredentialRejected(Exception):
 
 class DeadlineExpired(TimeoutError):
     pass
+
+
+_ESCAPE = re.compile(r"%([0-9a-fA-F]{2})")
+
+
+def _redirect_key(url: str) -> str:
+    """Use one browser-compatible key for Location targets and actual requests."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower().rstrip(".")
+    if scheme not in ("http", "https") or not host:
+        raise PolicyViolation("invalid redirect target")
+    try:
+        port = parts.port or (443 if scheme == "https" else 80)
+        if ":" not in host:
+            host = host.encode("idna").decode("ascii")
+    except (ValueError, UnicodeError):
+        raise PolicyViolation("invalid redirect target") from None
+    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    path = _ESCAPE.sub(lambda match: f"%{match[1].upper()}", parts.path or "/")
+    # Chromium treats percent-encoded dots as dot segments for HTTP(S) URLs.
+    path = path.replace("%2E", ".")
+    trailing_slash = path.endswith(("/", "/.", "/.."))
+    path = "/" + posixpath.normpath(path).lstrip("/")
+    if trailing_slash and not path.endswith("/"):
+        path += "/"
+    query = _ESCAPE.sub(lambda match: f"%{match[1].upper()}", parts.query)
+    return urlunsplit((scheme, authority, path, query, ""))
 
 
 def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int]:
@@ -190,7 +220,8 @@ class ProxyAddon:
             if url == "http://proxy.dravenpdf.invalid/__ready":
                 flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
                 return
-            depth = self.redirect_depth.get(url, 0)
+            key = _redirect_key(url)
+            depth = self.redirect_depth.get(key, 0)
             if depth > MAX_REDIRECTS:
                 raise PolicyViolation("redirect limit")
             self.flow_depth[flow.id] = depth
@@ -222,14 +253,14 @@ class ProxyAddon:
         try:
             response = flow.response
             source = flow.request.pretty_url
-            depth = self.flow_depth.pop(flow.id, self.redirect_depth.get(source, 0))
+            source_key = _redirect_key(source)
+            depth = self.flow_depth.pop(flow.id, self.redirect_depth.get(source_key, 0))
             if response is None or response.status_code not in {301, 302, 303, 307, 308}:
                 return
             location = response.headers.get("location")
             if not location:
                 return
-            # Fragments are browser-local and absent from the next HTTP request.
-            target = urlsplit(urljoin(source, location))._replace(fragment="").geturl()
+            target = _redirect_key(urljoin(source, location))
             self.redirect_depth[target] = max(self.redirect_depth.get(target, 0), depth + 1)
         except BaseException:
             self._deny(flow, "fatal", "unknown", "proxy failure")

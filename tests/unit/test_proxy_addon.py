@@ -11,8 +11,22 @@ from types import SimpleNamespace
 import pytest
 from mitmproxy import connection, ctx, http, tcp, udp
 
-from dravenpdf.render._proxy_addon import ProxyAddon
+from dravenpdf.render._proxy_addon import ProxyAddon, _redirect_key
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("HTTP://LOCALHOST:80/a/../chain?n=%7e#fragment", "http://localhost:80/chain?n=%7E"),
+        ("https://EXAMPLE.COM:443/a/./chain", "https://example.com:443/a/chain"),
+        ("http://[::1]/a", "http://[::1]:80/a"),
+        ("http://täst.de/x", "http://xn--tst-qla.de:80/x"),
+        ("http://LOCALHOST/a/%2e%2e/chain", "http://localhost:80/chain"),
+    ],
+)
+def test_redirect_keys_normalize_browser_url_variants(target: str, expected: str) -> None:
+    assert _redirect_key(target) == expected
 
 
 async def resolve(host: str) -> list[str]:

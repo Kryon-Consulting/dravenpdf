@@ -29,3 +29,16 @@
 - **Final event barrier:** the last proxy control-channel synchronization now runs after `BrowserPool.context` exits and before gate teardown. A regression injected a late block at that barrier; previously it saw `pool.active == 1`, and now it sees zero while the proxy is alive. Both fail mode and skip-mode report assertions pass.
 
 Verification for review fixes: focused proxy/guard/auth/assets suite **107 passed** before the added fragment case; both redirect wire cases **2 passed** afterward. Final `make check` passed with **542 non-browser tests** plus ruff, format, deptry, and mypy. Final `uv run pytest -m browser -q --tb=short`: **134 passed, 542 deselected**. No remaining test failure.
+
+## Review fix round 2: canonical redirect keys
+
+The proxy's ten-hop map previously stored the raw `Location` URL. Chromium lowercases hosts and normalizes dot segments before its next request, so an absolute `Location: http://LOCALHOST:<port>/...` escaped the lookup and reached hop eleven. An encoded `%2e%2e` path exposed the same issue. The addon now uses one canonical key on insertion and lookup: lowercase scheme and host, IDNA host encoding, explicit numeric port, normalized percent-escape case and dot segments (including encoded dots), and no fragment. Unsupported or malformed targets remain fatal. Sticky maximum depth is unchanged.
+
+The browser wire oracle now checks eight combinations of uppercase absolute or relative `Location`, encoded-dot or ordinary path, and fragment present or absent. In every case, with `on_blocked="skip"`, the destination logs hops zero through ten and receives zero bytes for hop eleven. The uppercase absolute case and encoded-dot case both failed before their respective fixes, each logging hop eleven. Unit cases cover host/scheme case, default ports, IDNA, IPv6, query escape case, fragments, and dot paths.
+
+Round 2 verification:
+
+- `uv run pytest tests/unit/test_proxy_addon.py tests/integration/test_proxy_gate_lifecycle.py -q --tb=short`: **50 passed in 42.69s**.
+- `make check`: ruff lint passed; formatting check passed (**82 files**); deptry passed; mypy passed (**42 source files**); non-browser pytest passed (**547 passed, 140 deselected in 29.76s**).
+- `uv run pytest -m browser -q --tb=short`: **140 passed, 547 deselected in 334.00s (0:05:33)**.
+- `git diff --check`: passed. No remaining regression in the completed suites.
