@@ -229,10 +229,12 @@ async def test_concurrent_renders_keep_headers_and_blocks_separate(server: Serve
 @pytest.mark.parametrize("fragment", [False, True])
 @pytest.mark.parametrize("absolute_uppercase", [False, True])
 @pytest.mark.parametrize("redirect_path", ["plain", "encoded_dot", "backslash"])
+@pytest.mark.parametrize("popup", [False, True])
 async def test_eleventh_redirect_destination_gets_zero_bytes_even_when_skipping(
     fragment: bool,
     absolute_uppercase: bool,
     redirect_path: str,
+    popup: bool,
 ) -> None:
     seen: list[int] = []
 
@@ -266,7 +268,19 @@ async def test_eleventh_redirect_destination_gets_zero_bytes_even_when_skipping(
     try:
         async with AsyncRenderer(allow_private_network=True, on_blocked="skip") as renderer:
             with suppress(RenderError):
-                await renderer.from_url(f"http://127.0.0.1:{httpd.server_port}/chain?n=0")
+                url = f"http://127.0.0.1:{httpd.server_port}/chain?n=0"
+                if popup:
+
+                    async def open_popup(page: Page) -> None:
+                        async with page.expect_popup() as pending:
+                            await page.evaluate("url => window.open(url)", url)
+                        child = await pending.value
+                        with suppress(Exception):
+                            await child.wait_for_load_state()
+
+                    await renderer.from_html("<p>parent</p>", prepare=open_popup)
+                else:
+                    await renderer.from_url(url)
         assert seen == list(range(11))
     finally:
         httpd.shutdown()
@@ -317,3 +331,92 @@ async def test_final_block_check_runs_after_context_closes(
             assert doc.render_report is not None
             assert doc.render_report.blocked == [("http://127.0.0.1:9", "policy")]
     assert calls == 3
+
+
+@pytest.mark.browser
+async def test_eleven_independent_redirecting_images_succeed():
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            parts = urlsplit(self.path)
+            seen.append(self.path)
+            if parts.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/end?" + parts.query)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+            self.end_headers()
+            if parts.path == "/end":
+                self.wfile.write(b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>')
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with AsyncRenderer(allow_private_network=True, on_blocked="skip") as renderer:
+            doc = await renderer.from_html(
+                "".join(
+                    f'<img src="http://127.0.0.1:{server.server_port}/start?n={n}">'
+                    for n in range(11)
+                )
+            )
+        assert len([p for p in seen if p.startswith("/end?")]) == 11, seen
+        assert doc.render_report.blocked == []
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.browser
+async def test_lost_redirect_session_fails_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dravenpdf.render._redirect_gate import RedirectGate
+
+    gates = []
+    start = RedirectGate.start.__func__
+
+    async def capture(cls, *args, **kwargs):
+        gate = await start(cls, *args, **kwargs)
+        gates.append(gate)
+        return gate
+
+    monkeypatch.setattr(RedirectGate, "start", classmethod(capture))
+
+    async def detach(page: Page) -> None:
+        await gates[0].session.detach()
+
+    async with AsyncRenderer(on_blocked="skip") as renderer:
+        with pytest.raises(RenderError, match="redirect control failed"):
+            await renderer.from_html("<p>test</p>", prepare=detach)
+    assert gates[0].fatal
+
+
+@pytest.mark.browser
+async def test_redirect_session_closes_before_browser_slot_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dravenpdf.render._redirect_gate import RedirectGate
+    from dravenpdf.render.pool import BrowserPool
+
+    events: list[str] = []
+    release = BrowserPool._release
+
+    def record_release(self: BrowserPool, *args: Any, **kwargs: Any) -> None:
+        events.append("release")
+        release(self, *args, **kwargs)
+
+    async def record_close(self: RedirectGate) -> None:
+        events.append("redirect close")
+
+    monkeypatch.setattr(BrowserPool, "_release", record_release)
+    monkeypatch.setattr(RedirectGate, "close", record_close)
+
+    async with AsyncRenderer() as renderer:
+        await renderer.from_html("<p>ready</p>")
+
+    assert events.index("redirect close") < events.index("release")

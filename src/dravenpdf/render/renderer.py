@@ -20,6 +20,7 @@ from dravenpdf.errors import AssetError, BlockedRequestError, RenderError, Rende
 from dravenpdf.options import RenderOptions
 from dravenpdf.render._proxy_gate import ProxyGate, new_credential
 from dravenpdf.render._redact import safe_message
+from dravenpdf.render._redirect_gate import RedirectGate
 from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.auth import RenderAuth
 from dravenpdf.render.guards import BlockPolicy, RequestGuard
@@ -292,9 +293,11 @@ class AsyncRenderer:
                 gate = await ProxyGate.start(
                     guard.proxy_policy(new_credential(), deadline), self.pool.proxy_ca, deadline
                 )
+                redirects: RedirectGate | None = None
                 try:
                     async with self.pool.context(
                         deadline=deadline,
+                        isolated=True,
                         service_workers="block",
                         accept_downloads=False,
                         proxy=gate.proxy_options,
@@ -304,6 +307,7 @@ class AsyncRenderer:
                             if auth is not None and auth.all_cookies():
                                 await ctx.add_cookies(auth.playwright_cookies())  # type: ignore[arg-type]
                             await guard.install(ctx)
+                            redirects = await RedirectGate.start(ctx, guard._block)
                             warmup = await ctx.new_page()
                             try:
                                 proof = await warmup.goto(
@@ -323,6 +327,7 @@ class AsyncRenderer:
                             if prepare is not None:
                                 await prepare(page)
                             await wait_until_ready(page, opts)
+                            await redirects.check()
                             await gate.synchronize()
                             guard.add_proxy_blocks(gate.blocked)
                             reported_blocks = len(gate.blocked)
@@ -333,7 +338,10 @@ class AsyncRenderer:
                                 fail_on_page_errors=opts.fail_on_page_errors,
                             )
                             data = await page.pdf(**opts.to_pdf_kwargs())
+                            await redirects.check()
                         except PlaywrightError as exc:
+                            if redirects is not None:
+                                await redirects.check()
                             if isinstance(exc, PlaywrightTimeoutError):
                                 raise
                             await gate.synchronize()
@@ -352,6 +360,13 @@ class AsyncRenderer:
                             if guard.blocked and self._on_blocked == "fail":
                                 guard.raise_if_blocked()
                             raise
+                        finally:
+                            if redirects is not None:
+                                redirects.closing = True
+                                try:
+                                    await ctx.close()
+                                finally:
+                                    await redirects.close()
                     # Context teardown can finish or abort network flows. Drain those
                     # events while the proxy is still alive before final reporting.
                     await gate.synchronize()

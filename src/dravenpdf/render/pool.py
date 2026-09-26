@@ -73,6 +73,7 @@ class BrowserPool:
         self._launch_args = list(launch_args)
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._launching: asyncio.Task[_Slot] | None = None
+        self._reservation_lock = asyncio.Lock()
         self._playwright: Playwright | None = None
         self._proxy_ca: ProxyCA | None = None
         self._current: _Slot | None = None
@@ -263,7 +264,7 @@ class BrowserPool:
 
     @asynccontextmanager
     async def context(
-        self, *, deadline: float | None = None, **options: Any
+        self, *, deadline: float | None = None, isolated: bool = False, **options: Any
     ) -> AsyncIterator[BrowserContext]:
         """A new, isolated browser context; closed when the block exits.
 
@@ -271,6 +272,9 @@ class BrowserPool:
         before the block runs: waiting for a free slot, launching Chromium if needed,
         and creating the context. Past it, :class:`TimeoutError` is raised. Other
         keyword arguments go to Playwright's ``browser.new_context()``.
+        ``isolated=True`` leases a dedicated process, closed after this context;
+        strict renders use this mode for browser-wide redirect interception.
+        It adds startup/memory cost and bypasses the shared recycle count.
         """
         if self._semaphore.locked() and self._waiting >= self.max_queue:
             raise PoolExhaustedError(
@@ -285,7 +289,7 @@ class BrowserPool:
         self._active += 1
         try:
             async with asyncio.timeout_at(deadline):
-                slot, ctx = await self._open(options)
+                slot, ctx = await self._open(options, isolated=isolated)
             try:
                 yield ctx
             finally:
@@ -296,15 +300,23 @@ class BrowserPool:
             self._active -= 1
             self._semaphore.release()
 
-    async def _open(self, options: dict[str, Any]) -> tuple[_Slot, BrowserContext]:
+    async def _open(
+        self, options: dict[str, Any], *, isolated: bool = False
+    ) -> tuple[_Slot, BrowserContext]:
         """Reserve the current browser and open a context on it.
 
         If the browser turns out to have just died, retries once on a new one. The
         reservation is released on any failure, including cancellation.
         """
         for attempt in (1, 2):
-            slot = await self._ensure_browser()
-            slot.active += 1  # reserve it before any await, so it can't be closed under us
+            async with self._reservation_lock:
+                slot = await self._ensure_browser()
+                slot.active += 1
+                if isolated:
+                    # Retire before creating the context: concurrent callers must
+                    # never share this render's browser-wide redirect interceptor.
+                    self._current = None
+                    self._retire(slot)
             try:
                 return slot, await self._new_context(slot, options)
             except PlaywrightError:

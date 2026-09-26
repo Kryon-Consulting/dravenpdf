@@ -3,9 +3,9 @@
 Every network request is checked by the per-render mitmproxy addon before reaching
 its destination. This module freezes a policy snapshot for that process and keeps
 Playwright's local-file root restriction, which HTTP proxies cannot enforce.
-Chromium redirect chains are observed for reporting. The proxy enforces a
-conservative render-wide budget of ten redirect responses before Chromium sees
-the eleventh, without depending on URL parser agreement.
+Chromium redirect chains are observed for reporting. A dedicated browser CDP
+interceptor enforces the per-chain redirect cap while the proxy independently
+checks every network destination.
 
 The DNS check and the upstream connection resolve separately; deployments rendering
 untrusted content should also restrict outbound network traffic.

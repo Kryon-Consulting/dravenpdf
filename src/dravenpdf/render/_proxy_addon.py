@@ -17,7 +17,7 @@ from dravenpdf.errors import BlockedRequestError
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
 from dravenpdf.render.assets import AssetBundle
 from dravenpdf.render.auth import origin_of
-from dravenpdf.render.guards import MAX_REDIRECTS, NetworkPolicy, Resolver, resolve_host
+from dravenpdf.render.guards import NetworkPolicy, Resolver, resolve_host
 
 EventSink = Callable[[dict[str, str]], None]
 
@@ -78,7 +78,6 @@ class ProxyAddon:
         self.control_alive = True
         # A render-wide budget is conservative, but does not depend on guessing
         # how Chromium will resolve Location into its next request URL.
-        self.redirects = 0
 
     def running(self) -> None:
         """Announce readiness only with the pre-connection security options in force."""
@@ -214,21 +213,6 @@ class ProxyAddon:
             self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
-
-    def response(self, flow: http.HTTPFlow) -> None:
-        try:
-            response = flow.response
-            if response is None or response.status_code not in {301, 302, 303, 307, 308}:
-                return
-            if not response.headers.get("location"):
-                return
-            self.redirects += 1
-            if self.redirects > MAX_REDIRECTS:
-                # Replace the redirect before Chromium sees it. Hop 11 cannot
-                # become an upstream request even if it parses Location oddly.
-                self._deny(flow, "blocked", self._target(flow), "redirect limit")
-        except BaseException:
-            self._deny(flow, "fatal", "unknown", "proxy failure")
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
         # The WebSocket handshake has already passed requestheaders.

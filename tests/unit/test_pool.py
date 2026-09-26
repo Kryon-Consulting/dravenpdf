@@ -202,3 +202,20 @@ async def test_close_waits_for_an_inflight_launch() -> None:
 
     assert len(pool.browsers) == 1
     assert not pool.browsers[0].connected  # launched late, but still closed
+
+
+async def test_isolated_leases_use_distinct_browsers_and_close_them() -> None:
+    pool = FakePool(max_concurrency=3)
+    contexts = []
+
+    async def use() -> None:
+        async with pool.context(isolated=True) as ctx:
+            contexts.append(ctx)
+            await asyncio.sleep(0.01)
+
+    await asyncio.gather(use(), use(), use())
+    await pool.close()
+    assert pool.launches == 3
+    assert len({id(ctx) for ctx in contexts}) == 3
+    assert all(not browser.connected for browser in pool.browsers)
+    assert pool.active == 0

@@ -55,3 +55,31 @@ Replacing the response from mitmproxy's `responseheaders` hook passed the wire a
 
 Round 3 `make check` passed: ruff, formatting (**82 files**), deptry, mypy (**42 source files**), and **543 non-browser tests passed, 144 deselected in 29.45s**.
 Full browser verification: `uv run pytest -m browser -q --tb=short` passed **144 tests, 543 deselected in 344.73s (0:05:44)**. Final `git diff --check`, ruff lint/format, and mypy checks passed. No failing regression remains; the aggregate-budget compatibility limit above remains open.
+
+## Review fix round 4: BLOCKED on scoped browser redirect interception
+
+No production changes were made. The shared redirect budget remains incompatible with the binding spec; this round does not claim Task 3 complete.
+
+Fresh disposable wire evidence is saved in `.superpowers/sdd/2026-09-26-strict-network-gate/test_round4_probe.py`. Command: `uv run pytest .superpowers/sdd/2026-09-26-strict-network-gate/test_round4_probe.py -q --tb=short` (run with sandbox escalation for existing uv cache and local Chromium/listeners). Result: **3 failed in 5.24s**, as expected:
+
+- Eleven independent one-hop image chains: only **10** `/end` destinations received requests, violating the expected 11.
+- A `BrowserContext.route("**/*", ...)` handler counted `request.redirected_from` parents and aborted depth >10. For a normal navigation with uppercase-host/backslash Location values, server received hop **11**; handler was called only at depth **0**.
+- The identical context route probe with a popup also received hop **11**, with handler called only at depth **0**.
+
+Installed Playwright's public API documentation explicitly states the route handler is called only for the first URL when the response is a redirect (`playwright/async_api/_generated.py:10580`). Thus replacing the request observer with a route handler cannot implement the bound. These route probes deliberately isolate Chromium routing without the proxy budget; the separate renderer image probe exercises the production mandatory proxy.
+
+A browser-root CDP Fetch interceptor could pause every hop while retaining proxy destination enforcement independently. Prior archived probes indicate browser-root Fetch can see popup and worker traffic. However, production ownership needs a per-browser dispatcher: BrowserPool shares one Chromium process across concurrent render contexts; Fetch.enable has no browserContextId filter and Fetch.requestPaused does not identify browserContextId. Installing a root Fetch session per render is not a proven isolated solution. Per-page sessions alone do not establish interception before a popup's first navigation/redirect. Required follow-up design must specify target/frame/context association, worker and popup attachment, concurrent render isolation, and lost-session failure notification. A session loss may release paused requests, but the mandatory proxy must continue independently checking their destinations and the render must fail.
+
+Alternatives for controller consideration: (1) design and prove one pool-owned CDP dispatcher with scoped per-context observers and failure propagation; (2) isolate browser processes per render, accepting an explicit pool architecture/performance change. A render-wide budget and a new URL canonicalization map are not acceptable alternatives under the current spec.
+
+No GREEN result exists and no full gate was run: production code is unchanged, and a full suite would only repeat earlier passing tests that omit this compatibility regression. The red probes remain in ignored SDD storage to preserve reproducibility without adding knowingly failing tests to the normal suite. Only this evidence report is committed; the disposable probes remain in ignored SDD storage.
+
+Per-render browser alternative evaluated against the current implementation: it preserves the proxy boundary and gives a root Fetch session a single render owner. However, `BrowserPool._open` reserves a shared `_Slot` before context creation and `_release` retires based on completed render count; `recycle_after=1` does not isolate overlapping contexts. Existing `tests/unit/test_pool.py` explicitly asserts three concurrent contexts use one launch. Implementing isolation therefore requires a separate lease path or replacement slot architecture with semaphore/queue/deadline handling and orphan browser/context cleanup. Renderer use of `recycle_after` and the documented shared-process behavior would change. This is feasible as an explicit revised architecture, not established as a drop-in redirect fix.
+
+## Review fix round 5: isolated per-chain redirect control
+
+Strict renders now reserve a dedicated Chromium process while retaining the pool's semaphore, queue, and deadline controls. A browser-root CDP Fetch session follows Chromium's `redirectedRequestId` lineage and fails hop 11. The proxy remains the independent destination-policy boundary if CDP is lost. The proxy's incompatible render-wide redirect budget was removed. Real wire tests cover 24 top-level and popup redirect variants and eleven unrelated one-hop image chains.
+
+The first full browser run exposed an intermittent teardown timeout: pool release could close the isolated browser before the root CDP session detached. A cleanup-order regression failed with `['release', 'redirect close']`; closing the context and detaching CDP before pool release made it pass. The two existing tests that timed out in that run passed after the fix. The browser suite then exposed two stale shared-process assertions in `test_render.py`; they now verify per-render process isolation, recovery after crashing an active browser, and the slow-launch deadline under the new lease path.
+
+Final Task 3 evidence: `make check` passed (Ruff, format, deptry, mypy, **543 non-browser tests**); `uv run pytest -m browser -q -x --tb=short` passed **159 browser tests**; `git diff --check` passed. The browser run took 387.59 seconds. The new session cleanup and isolated-process design still need the Task 4 failure and concurrency matrix and the whole-branch security review.

@@ -15,21 +15,6 @@ from dravenpdf.render._proxy_addon import ProxyAddon
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
 
 
-async def test_redirect_budget_blocks_eleventh_response_across_distinct_targets() -> None:
-    proxy, events = addon(allowed_hosts=["public.example"])
-    for hop in range(11):
-        request = flow("GET", f"https://public.example/unique-{hop}", host="public.example")
-        await proxy.requestheaders(request)
-        assert request.response is None
-        request.response = http.Response.make(302, b"", {"Location": f"/different-{hop + 1}\\next"})
-        proxy.response(request)
-        if hop < 10:
-            assert request.response.status_code == 302
-        else:
-            assert request.response.status_code == 403
-            assert events[-1]["reason"] == "redirect limit"
-
-
 async def resolve(host: str) -> list[str]:
     return {"public.example": ["93.184.216.34"], "other.example": ["10.0.0.4"]}[host]
 

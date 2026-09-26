@@ -301,26 +301,27 @@ async def test_timeout_counts_time_waiting_for_a_slot() -> None:
         assert (await r.from_html("<p>after</p>")).page_count == 1
 
 
-async def test_browser_is_recycled() -> None:
+async def test_strict_renders_use_isolated_browsers() -> None:
     async with AsyncRenderer(recycle_after=2) as r:
         for i in range(5):
             await r.from_html(f"<p>{i}</p>")
 
-        assert r.pool.launches == 3
+        assert r.pool.launches == 5
         assert r.pool.restarts == 0
 
 
 async def test_recovers_after_browser_crash() -> None:
+    async def crash(page: Any) -> None:
+        await page.context.browser.close()
+
     async with AsyncRenderer() as r:
-        await r.from_html("<p>before</p>")
-        slot = r.pool._current
-        assert slot is not None
-        await slot.browser.close()  # simulate Chromium dying
+        with pytest.raises(RenderError):
+            await r.from_html("<p>before</p>", prepare=crash)
 
         doc = await r.from_html("<p>after crash</p>")
 
         assert "after crash" in pdf_text(doc)[0]
-        assert r.pool.restarts == 1
+        assert r.pool.launches == 2
 
 
 class _SlowLaunchPool(BrowserPool):
@@ -335,9 +336,6 @@ async def test_deadline_covers_a_slow_browser_launch() -> None:
     pool = _SlowLaunchPool()
     async with pool, AsyncRenderer(pool=pool) as r:
         await r.from_html("<p>warm up</p>")
-        slot = pool._current
-        assert slot is not None
-        await slot.browser.close()  # the next render has to relaunch Chromium
         pool.delay = 3.0
         loop = asyncio.get_running_loop()
         started = loop.time()
