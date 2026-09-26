@@ -57,6 +57,7 @@ from dravenpdf.render._redact import safe_message
 from dravenpdf.render.auth import origin_of
 
 if TYPE_CHECKING:
+    from dravenpdf.render._proxy_protocol import ProxyPolicy
     from dravenpdf.render.assets import AssetBundle
     from dravenpdf.render.auth import RenderAuth
 
@@ -93,6 +94,72 @@ def _normalize_host(host: str) -> str:
     return host.strip().lower().rstrip(".")
 
 
+class NetworkPolicy:
+    """The shared DNS and allowlist decision used by browser and proxy guards."""
+
+    def __init__(
+        self,
+        *,
+        allowed_hosts: Iterable[str] | None,
+        allow_private_network: bool,
+        bundle: AssetBundle | None,
+        resolver: Resolver = resolve_host,
+    ) -> None:
+        self.exact: set[str] = set()
+        self.suffixes: list[str] = []
+        self.has_allowlist = allowed_hosts is not None
+        for entry in allowed_hosts or ():
+            host = _normalize_host(entry)
+            if host.startswith("*."):
+                self.suffixes.append(host[1:])
+            elif host:
+                self.exact.add(host)
+        self.allow_private = allow_private_network
+        self.bundle = bundle
+        self.resolver = resolver
+        self.dns_cache: dict[str, list[str]] = {}
+
+    async def reason(self, url: str) -> str | None:
+        parts = urlsplit(url)
+        scheme = _WEBSOCKET_SCHEMES.get(parts.scheme.lower(), parts.scheme.lower())
+        if scheme in _ALWAYS_ALLOWED_SCHEMES:
+            return None
+        if scheme not in ("http", "https"):
+            return f"scheme {scheme or '(none)'!r} is not allowed"
+        host = _normalize_host(parts.hostname or "")
+        if self.bundle is not None and self.bundle.owns(url):
+            return None
+        if not host:
+            return "URL has no host"
+        if self.has_allowlist:
+            allowed = host in self.exact or any(host.endswith(s) for s in self.suffixes)
+            return None if allowed else "host is not on the allowlist"
+        if self.allow_private:
+            return None
+        try:
+            addresses = await self.resolve(host)
+        except OSError as exc:
+            return f"could not resolve host ({exc})"
+        private = [address for address in addresses if not _is_public(address)]
+        if private or not addresses:
+            return f"host resolves to a non-public address ({', '.join(private) or 'none'})"
+        return None
+
+    async def check(self, url: str) -> None:
+        reason = await self.reason(url)
+        if reason is not None:
+            raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+
+    async def resolve(self, host: str) -> list[str]:
+        try:
+            return [str(ipaddress.ip_address(host.strip("[]")))]
+        except ValueError:
+            pass
+        if host not in self.dns_cache:
+            self.dns_cache[host] = await self.resolver(host)
+        return self.dns_cache[host]
+
+
 class RequestGuard:
     """Decides which URLs a render may load, and enforces it on a browser context.
 
@@ -121,34 +188,51 @@ class RequestGuard:
     ) -> None:
         self._bundle = bundle
         self._auth = auth
-        self._exact: set[str] = set()
-        self._suffixes: list[str] = []
-        self._has_allowlist = allowed_hosts is not None
-        for entry in allowed_hosts or ():
-            host = _normalize_host(entry)
-            if host.startswith("*."):
-                self._suffixes.append(host[1:])  # keep the leading dot
-            elif host:
-                self._exact.add(host)
-        self._allow_private = allow_private_network
+        self.network = NetworkPolicy(
+            allowed_hosts=allowed_hosts,
+            allow_private_network=allow_private_network,
+            bundle=bundle,
+            resolver=resolver,
+        )
         self._file_root = None if file_root is None else os.path.realpath(file_root)
-        self._resolver = resolver
-        self._dns_cache: dict[str, list[str]] = {}
         self.blocked: list[tuple[str, str]] = []
 
     @property
     def checks_requests(self) -> bool:
         """False when every URL is allowed, so no interception is needed."""
         return (
-            self._has_allowlist
-            or not self._allow_private
+            self.network.has_allowlist
+            or not self.network.allow_private
             or self._file_root is not None
             or self._bundle is not None
             or (self._auth is not None and self._auth.has_headers)
         )
 
-    def _host_allowlisted(self, host: str) -> bool:
-        return host in self._exact or any(host.endswith(s) for s in self._suffixes)
+    def proxy_policy(self, credential: str, deadline: float | None) -> ProxyPolicy:
+        """Freeze the network policy and response data for one proxy process."""
+        from dravenpdf.render._proxy_protocol import ProxyPolicy
+
+        allowed = None
+        if self.network.has_allowlist:
+            allowed = sorted(self.network.exact) + [
+                f"*{suffix}" for suffix in self.network.suffixes
+            ]
+        headers = (
+            {
+                origin: {name: value.get_secret_value() for name, value in values.items()}
+                for origin, values in self._auth.headers.items()
+            }
+            if self._auth is not None
+            else {}
+        )
+        return ProxyPolicy(
+            allowed_hosts=allowed,
+            allow_private_network=self.network.allow_private,
+            bundle=self._bundle.snapshot() if self._bundle is not None else None,
+            headers=headers,
+            credential=credential,
+            deadline=deadline,
+        )
 
     async def check(self, url: str) -> None:
         """Raise :class:`BlockedRequestError` if ``url`` may not be loaded."""
@@ -158,31 +242,9 @@ class RequestGuard:
 
     async def _reason_to_block(self, url: str) -> str | None:
         parts = urlsplit(url)
-        scheme = parts.scheme.lower()
-        scheme = _WEBSOCKET_SCHEMES.get(scheme, scheme)  # same host rules as HTTP
-        if scheme in _ALWAYS_ALLOWED_SCHEMES:
-            return None
-        if scheme == "file" and self._file_root is not None:
+        if parts.scheme.lower() == "file" and self._file_root is not None:
             return await asyncio.to_thread(self._reason_to_block_file, parts.path)
-        if scheme not in ("http", "https"):
-            return f"scheme {scheme or '(none)'!r} is not allowed"
-        host = _normalize_host(parts.hostname or "")
-        if self._bundle is not None and self._bundle.owns(url):
-            return None  # answered from memory by _handle
-        if not host:
-            return "URL has no host"
-        if self._has_allowlist:
-            return None if self._host_allowlisted(host) else "host is not on the allowlist"
-        if self._allow_private:
-            return None
-        try:
-            addresses = await self._resolve(host)
-        except OSError as exc:
-            return f"could not resolve host ({exc})"
-        private = [a for a in addresses if not _is_public(a)]
-        if private or not addresses:
-            return f"host resolves to a non-public address ({', '.join(private) or 'none'})"
-        return None
+        return await self.network.reason(url)
 
     def _reason_to_block_file(self, url_path: str) -> str | None:
         assert self._file_root is not None
@@ -190,15 +252,6 @@ class RequestGuard:
         if os.path.commonpath([path, self._file_root]) == self._file_root:
             return None
         return f"local file is outside {self._file_root}"
-
-    async def _resolve(self, host: str) -> list[str]:
-        try:
-            return [str(ipaddress.ip_address(host.strip("[]")))]
-        except ValueError:
-            pass
-        if host not in self._dns_cache:
-            self._dns_cache[host] = await self._resolver(host)
-        return self._dns_cache[host]
 
     def _block(self, url: str, reason: str) -> None:
         logger.warning("blocked request to %s: %s", url, reason)

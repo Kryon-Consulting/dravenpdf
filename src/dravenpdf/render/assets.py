@@ -10,6 +10,7 @@ and anything not in the bundle is a 404 (which shows up in the render report).
 
 from __future__ import annotations
 
+import base64
 import mimetypes
 import posixpath
 from collections.abc import Mapping
@@ -78,7 +79,33 @@ class AssetBundle:
     @staticmethod
     def owns(url: str) -> bool:
         parts = urlsplit(url)
-        return parts.scheme == "https" and (parts.hostname or "").lower() == HOST
+        return (
+            parts.scheme == "https"
+            and (parts.hostname or "").lower() == HOST
+            and parts.port in (None, 443)
+        )
+
+    def snapshot(self) -> dict[str, object]:
+        """JSON-safe response data for the isolated proxy process."""
+        return {
+            "html": base64.b64encode(self.html).decode("ascii"),
+            "files": {
+                key: base64.b64encode(data).decode("ascii") for key, data in self.files.items()
+            },
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict[str, object]) -> AssetBundle:
+        bundle = cls.__new__(cls)
+        bundle.html = base64.b64decode(str(data["html"]), validate=True)
+        files = data["files"]
+        if not isinstance(files, dict):
+            raise ValueError("invalid bundle manifest")
+        bundle.files = {
+            check_path(str(key)): base64.b64decode(str(value), validate=True)
+            for key, value in files.items()
+        }
+        return bundle
 
     def lookup(self, url: str) -> tuple[bytes, str] | None:
         """(body, content type) for a URL on the bundle origin, or None if missing."""
