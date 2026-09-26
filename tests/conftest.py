@@ -229,7 +229,8 @@ async def test_browser_pool(https_sites: HttpsSites) -> AsyncIterator[BrowserPoo
     """A test-only Chromium with local test hosts and trust for the fixture leaf."""
     args = (
         *DEFAULT_LAUNCH_ARGS,
-        "--host-resolver-rules=MAP a.test 127.0.0.1,MAP b.test 127.0.0.1",
+        "--host-resolver-rules=MAP a.test 127.0.0.1,MAP b.test 127.0.0.1,"
+        "MAP bundle.dravenpdf.invalid 127.0.0.1",
         f"--ignore-certificate-errors-spki-list={https_sites.spki_hash}",
         "--no-proxy-server",
     )

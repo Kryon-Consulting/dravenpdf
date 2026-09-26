@@ -185,6 +185,33 @@ async def test_lost_control_reader_denies_next_request(
 
 
 @pytest.mark.browser
+async def test_proxy_exit_fails_render_without_direct_fallback(
+    monkeypatch: pytest.MonkeyPatch, server: Server
+) -> None:
+    gates: list[ProxyGate] = []
+    original = ProxyGate.start
+
+    async def capture(*args: Any, **kwargs: Any) -> ProxyGate:
+        gate = await original(*args, **kwargs)
+        gates.append(gate)
+        return gate
+
+    monkeypatch.setattr(ProxyGate, "start", capture)
+    url = server.url("/secret?tag=proxy-exit")
+
+    async def stop_proxy(page: Page) -> None:
+        gates[0]._process.terminate()
+        await gates[0]._process.wait()
+        await page.evaluate("url => fetch(url).catch(() => null)", url)
+
+    async with AsyncRenderer(allowed_hosts=["localhost"]) as renderer:
+        with pytest.raises(RenderError):
+            await renderer.from_html("<p>page</p>", prepare=stop_proxy)
+        assert renderer.pool.active == 0
+    assert requests_tagged("proxy-exit") == []
+
+
+@pytest.mark.browser
 async def test_auth_warmup_does_not_change_source_origin(tmp_path: Path) -> None:
     urls: list[str] = []
 

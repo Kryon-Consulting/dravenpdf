@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import suppress
+from urllib.parse import quote
 
 import pytest
 import websockets
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
 
-from conftest import pdf_text
+from conftest import Server, pdf_text, requests_tagged
 from dravenpdf import AsyncRenderer, BlockedRequestError, RenderOptions
 
 pytestmark = pytest.mark.browser
@@ -73,3 +77,70 @@ async def test_failed_fetch_does_not_hang_the_render() -> None:
 
     assert loop.time() - started < 5
     assert "IMG-FAILED" in pdf_text(doc)[0]
+
+
+@pytest.mark.parametrize("redirect", [False, True], ids=["first-navigation", "redirect"])
+async def test_popup_blocked_target_gets_zero_request_bytes(server: Server, redirect: bool) -> None:
+    tag = f"popup-target-{redirect}"
+    blocked = server.url(f"/secret?tag={tag}", host="127.0.0.1")
+    popup_url = (
+        server.url(f"/redirect?to={quote(blocked, safe='')}&tag=popup-source")
+        if redirect
+        else blocked
+    )
+
+    async def open_popup(page: Page) -> None:
+        async with page.expect_popup(timeout=5000) as opened:
+            await page.evaluate("url => window.open(url)", popup_url)
+        popup = await opened.value
+        with suppress(PlaywrightError):
+            await popup.wait_for_load_state(timeout=1000)
+
+    async with AsyncRenderer(allowed_hosts=["localhost"], on_blocked="skip") as renderer:
+        doc = await renderer.from_html("<p>parent</p>", prepare=open_popup)
+
+    assert requests_tagged(tag) == []
+    assert doc.render_report is not None
+    assert [url for url, _ in doc.render_report.blocked] == [blocked]
+
+
+async def test_nested_frame_and_worker_blocked_targets_get_zero_bytes(server: Server) -> None:
+    frame_url = server.url("/secret?tag=nested-frame", host="127.0.0.1")
+    worker_url = server.url("/secret?tag=worker-fetch", host="127.0.0.1")
+
+    async def open_targets(page: Page) -> None:
+        async with page.expect_response(
+            lambda response: response.url == frame_url, timeout=5000
+        ) as pending:
+            await page.evaluate(
+                """url => {
+                const outer = document.createElement('iframe');
+                outer.srcdoc = `<iframe src="${url}"></iframe>`;
+                document.body.append(outer);
+            }""",
+                frame_url,
+            )
+        assert (await pending.value).status == 403
+        await page.evaluate(
+            """url => new Promise(resolve => {
+                const code = `fetch(${JSON.stringify(url)})
+                    .then(() => postMessage('done'))
+                    .catch(() => postMessage('done'))`;
+                const worker = new Worker(URL.createObjectURL(
+                    new Blob([code], {type: 'text/javascript'})
+                ));
+                worker.onmessage = () => { worker.terminate(); resolve(); };
+            })""",
+            worker_url,
+        )
+
+    async with AsyncRenderer(allowed_hosts=["localhost"], on_blocked="skip") as renderer:
+        doc = await renderer.from_url(server.url("/secret"), prepare=open_targets)
+
+    assert requests_tagged("nested-frame") == []
+    assert requests_tagged("worker-fetch") == []
+    assert doc.render_report is not None
+    assert len(doc.render_report.blocked) == 2, doc.render_report.blocked
+    # The proxy emits origin-only events; the parent may attribute two simultaneous
+    # blocks on that origin to the last observed URL.
+    assert all(url in {frame_url, worker_url} for url, _ in doc.render_report.blocked)

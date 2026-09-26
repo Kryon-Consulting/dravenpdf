@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import ipaddress
+import socket
 import ssl
 import threading
 from collections.abc import Iterator
@@ -12,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -28,6 +30,7 @@ class RecordedRequest:
     path: str
     host: str
     headers: dict[str, str]
+    body: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -35,11 +38,23 @@ class HttpsSites:
     a_origin: str
     b_origin: str
     http_origin: str
+    loopback_origin: str
+    ip_origin: str
+    ip_other_port_origin: str
+    ip_http_origin: str
+    upstream_ca: Path
     spki_hash: str
     records: list[RecordedRequest] = field(default_factory=list)
 
     def received(self, tag: str) -> list[RecordedRequest]:
         return [record for record in self.records if f"tag={tag}" in record.path]
+
+    def received_exact(self, tag: str) -> list[RecordedRequest]:
+        return [
+            record
+            for record in self.records
+            if parse_qs(urlsplit(record.path).query).get("tag") == [tag]
+        ]
 
 
 def _certificate(directory: Path) -> tuple[Path, Path, str]:
@@ -68,7 +83,14 @@ def _certificate(directory: Path) -> tuple[Path, Path, str]:
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("a.test"), x509.DNSName("b.test")]),
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("a.test"),
+                    x509.DNSName("b.test"),
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]
+            ),
             critical=False,
         )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
@@ -100,16 +122,24 @@ def serve_https(directory: Path) -> Iterator[HttpsSites]:
     records: list[RecordedRequest] = []
 
     class Handler(_Handler):
-        def _record(self) -> dict[str, str]:
+        def _record(self, body: bytes = b"") -> dict[str, str]:
             headers = {name.lower(): value for name, value in self.headers.items()}
             records.append(
-                RecordedRequest(self.command, self.path, headers.get("host", ""), headers)
+                RecordedRequest(self.command, self.path, headers.get("host", ""), headers, body)
             )
             return headers
 
         def do_GET(self) -> None:
             headers = self._record()
-            if urlsplit(self.path).path == "/auth/cors-api":
+            parts = urlsplit(self.path)
+            if parts.path == "/set-cookie-redirect":
+                target = parse_qs(parts.query)["to"][0]
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Set-Cookie", "new=from-redirect; SameSite=None; Secure; Path=/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif parts.path == "/auth/cors-api":
                 self._send(
                     200,
                     b"CORS-API-OK",
@@ -123,19 +153,42 @@ def serve_https(directory: Path) -> Iterator[HttpsSites]:
                 super().do_GET()
 
         def do_POST(self) -> None:
-            self._record()
-            self._send(200, b"OK", "text/plain")
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self._record(body)
+            parts = urlsplit(self.path)
+            if parts.path == "/redirect-post":
+                query = parse_qs(parts.query)
+                self.send_response(int(query["status"][0]))
+                self.send_header("Location", query["to"][0])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._send(200, b"OK", "text/plain")
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
+    other_port_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    other_port_server.daemon_threads = True
+
+    class IPv6Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6
+
+    loopback_server = IPv6Server(("::1", 0), Handler)
+    loopback_server.daemon_threads = True
     http_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     http_server.daemon_threads = True
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(str(cert_path), str(key_path))
     server.socket = tls.wrap_socket(server.socket, server_side=True)
+    other_port_server.socket = tls.wrap_socket(other_port_server.socket, server_side=True)
+    loopback_server.socket = tls.wrap_socket(loopback_server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
+    other_port_thread = threading.Thread(target=other_port_server.serve_forever, daemon=True)
+    loopback_thread = threading.Thread(target=loopback_server.serve_forever, daemon=True)
     http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     thread.start()
+    other_port_thread.start()
+    loopback_thread.start()
     http_thread.start()
     port = server.server_address[1]
     try:
@@ -143,6 +196,11 @@ def serve_https(directory: Path) -> Iterator[HttpsSites]:
             f"https://a.test:{port}",
             f"https://b.test:{port}",
             f"http://a.test:{http_server.server_address[1]}",
+            f"https://localhost:{loopback_server.server_address[1]}",
+            f"https://127.0.0.1:{port}",
+            f"https://127.0.0.1:{other_port_server.server_address[1]}",
+            f"http://127.0.0.1:{http_server.server_address[1]}",
+            cert_path,
             spki_hash,
             records,
         )
@@ -150,6 +208,12 @@ def serve_https(directory: Path) -> Iterator[HttpsSites]:
         server.shutdown()
         server.server_close()
         thread.join()
+        other_port_server.shutdown()
+        other_port_server.server_close()
+        other_port_thread.join()
+        loopback_server.shutdown()
+        loopback_server.server_close()
+        loopback_thread.join()
         http_server.shutdown()
         http_server.server_close()
         http_thread.join()

@@ -67,7 +67,9 @@ class ProxyGate:
         return self._fatal_reason
 
     @classmethod
-    async def start(cls, policy: ProxyPolicy, ca: ProxyCA, deadline: float) -> ProxyGate:
+    async def start(
+        cls, policy: ProxyPolicy, ca: ProxyCA, deadline: float, *, upstream_ca: Path | None = None
+    ) -> ProxyGate:
         """Start a ready loopback proxy or fail before a context can be made."""
         loop = asyncio.get_running_loop()
         for _ in range(_START_ATTEMPTS):
@@ -93,6 +95,11 @@ class ProxyGate:
                     "flow_detail": 0,
                     "termlog_verbosity": "error",
                 }
+                if upstream_ca is not None:
+                    trusted = path / "trusted-upstream-ca.pem"
+                    shutil.copyfile(upstream_ca, trusted)
+                    os.chmod(trusted, 0o600)
+                    config["ssl_verify_upstream_trusted_ca"] = str(trusted)
                 (path / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
                 os.chmod(path / "config.yaml", 0o600)
                 read_fd, write_fd = os.pipe()
