@@ -30,6 +30,10 @@ class CredentialRejected(Exception):
     pass
 
 
+class DeadlineExpired(TimeoutError):
+    pass
+
+
 def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int]:
     try:
         parts = urlsplit("//" + value)
@@ -137,7 +141,7 @@ class ProxyAddon:
             if flow.client_conn.transport_protocol != "tcp":
                 raise PolicyViolation("unsupported transport")
             if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
-                raise TimeoutError("deadline")
+                raise DeadlineExpired("deadline")
             self._check_credential(flow)
             host, port = _authority(flow.request.authority)
             if (flow.request.host.lower().rstrip("."), flow.request.port) != (host, port):
@@ -147,7 +151,7 @@ class ProxyAddon:
         except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
             reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
             self._deny(flow, "blocked", target, reason)
-        except TimeoutError:
+        except DeadlineExpired:
             self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")
@@ -161,7 +165,7 @@ class ProxyAddon:
             if flow.client_conn.transport_protocol != "tcp":
                 raise PolicyViolation("unsupported transport")
             if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
-                raise TimeoutError("deadline")
+                raise DeadlineExpired("deadline")
             self._check_credential(flow)
             if request.scheme not in ("http", "https"):
                 raise PolicyViolation("unsupported scheme")
@@ -192,7 +196,7 @@ class ProxyAddon:
         except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
             reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
             self._deny(flow, "blocked", target, reason)
-        except TimeoutError:
+        except DeadlineExpired:
             self._deny(flow, "fatal", target, "deadline")
         except BaseException:
             self._deny(flow, "fatal", target, "proxy failure")

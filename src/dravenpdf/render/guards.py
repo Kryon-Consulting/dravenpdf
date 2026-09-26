@@ -138,7 +138,7 @@ class NetworkPolicy:
             return None
         try:
             addresses = await self.resolve(host)
-        except PermissionError:
+        except (PermissionError, TimeoutError):
             raise
         except OSError as exc:
             return f"could not resolve host ({exc})"

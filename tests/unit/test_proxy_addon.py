@@ -187,7 +187,9 @@ async def test_resolver_exception_fails_closed_and_reports_fatal() -> None:
     ]
 
 
-@pytest.mark.parametrize("error", [ValueError("bad DNS"), PermissionError("no DNS")])
+@pytest.mark.parametrize(
+    "error", [ValueError("bad DNS"), PermissionError("no DNS"), TimeoutError("DNS timeout")]
+)
 async def test_resolver_internal_errors_are_fatal(error: Exception) -> None:
     async def broken(_host: str) -> list[str]:
         raise error
