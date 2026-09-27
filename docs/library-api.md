@@ -321,6 +321,7 @@ doc.stamp_text("CONFIDENTIAL", font_size=48, color="#FF0000", opacity=0.3, angle
 doc.stamp_image(logo_png, width=120, position="top-right", margin=36, opacity=1.0)
 doc.overlay(letterhead_pdf, stamp_page=0, under=True)      # page of another PDF, fit + centered
 await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
+await doc.stamp_html(renderer, html, options=RenderOptions(timeout_ms=10_000), max_sizes=10)
 ```
 
 - `position`: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
@@ -331,7 +332,11 @@ await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
 - `stamp_image` accepts PNG, JPEG, GIF, WebP, ... and keeps transparency. Its default
   size is the image's pixel size at 96 dpi, and it always shrinks to fit inside the margins.
 - `stamp_html` renders the HTML once per distinct page size, at that size and with no
-  margins. The HTML page is transparent except for what it draws.
+  margins. The HTML page is transparent except for what it draws. `options` sets how
+  each render loads and waits (timeout, waits, viewport, locale, ...); its page layout
+  (paper, size, margins, orientation, scale, header/footer, page ranges, outline) is
+  always the target page's. `max_sizes` raises `LimitExceededError` before rendering
+  when the pages have more distinct sizes than that.
 - `opacity` applies to the stamp as a whole; `under=True` draws it behind the page content.
 
 ### Images and text

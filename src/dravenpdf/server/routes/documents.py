@@ -18,6 +18,7 @@ from dravenpdf.document.pages import parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
+from dravenpdf.options import RenderOptions
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
     ZIP_RESPONSE,
@@ -27,6 +28,8 @@ from dravenpdf.server.deps import (
     renderer_of,
     require_api_key,
     settings_of,
+    timed,
+    within_deadline,
     zip_response,
 )
 from dravenpdf.server.errors import ApiError
@@ -157,10 +160,14 @@ async def stamp(
         )  # fmt: skip
     else:
         assert html is not None
-        result = await doc.stamp_html(
+        settings = settings_of(request)
+        work = doc.stamp_html(
             renderer_of(request), html, opacity=1.0 if opacity is None else opacity,
             pages=targets, under=under,
+            options=RenderOptions(timeout_ms=settings.render_timeout_ms),
+            max_sizes=settings.max_html_stamp_sizes,
         )  # fmt: skip
+        result = await timed(request, "stamp", within_deadline(settings.render_timeout_ms, work))
     return await pdf_response(result, "stamped.pdf")
 
 

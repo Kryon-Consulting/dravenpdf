@@ -151,10 +151,12 @@ class Renderer:
         pages: Iterable[int] | None = None,
         under: bool = False,
         base_url: str | None = None,
+        options: RenderOptions | None = None,
+        max_sizes: int | None = None,
     ) -> PdfDocument:
         """Sync form of ``await document.stamp_html(async_renderer, html, ...)``."""
-        return self._run(
-            document.stamp_html(
-                self._async(), html, opacity=opacity, pages=pages, under=under, base_url=base_url
-            )
-        )
+        work = document.stamp_html(
+            self._async(), html, opacity=opacity, pages=pages, under=under,
+            base_url=base_url, options=options, max_sizes=max_sizes,
+        )  # fmt: skip
+        return self._run(work)

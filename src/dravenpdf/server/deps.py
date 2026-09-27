@@ -14,7 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from dravenpdf.document.pages import optional_page_ranges
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.errors import LimitExceededError
+from dravenpdf.errors import LimitExceededError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.renderer import AsyncRenderer
 from dravenpdf.server.config import Settings
@@ -72,6 +72,17 @@ def clamp_timeout(options: RenderOptions, settings: Settings) -> RenderOptions:
 async def timed[T](request: Request, source: str, work: Awaitable[T]) -> T:
     with metrics_of(request).render_seconds.labels(source).time():
         return await work
+
+
+async def within_deadline[T](timeout_ms: int, work: Awaitable[T]) -> T:
+    """``work``, bounded as a whole by the server's render timeout."""
+    try:
+        async with asyncio.timeout(timeout_ms / 1000):
+            return await work
+    except TimeoutError:
+        raise RenderTimeoutError(
+            f"render did not finish within {timeout_ms} ms", timeout_ms=timeout_ms
+        ) from None
 
 
 async def read_pdf(upload: UploadFile, password: str | None = None) -> PdfDocument:

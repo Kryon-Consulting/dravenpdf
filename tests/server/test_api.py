@@ -964,3 +964,41 @@ def test_images_to_pdf_pixel_cap(fake: FakeRenderer) -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "limit_exceeded"
+
+
+def test_stamp_html_uses_the_server_timeout(client: TestClient, fake: FakeRenderer) -> None:
+    response = client.post(
+        "/v1/pdf/stamp", files={"file": upload(pdf_bytes())}, data={"html": "<p>x</p>"},
+        headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
+    (_, _, options) = fake.calls[0]
+    assert options is not None
+    assert options.timeout_ms == 10_000
+
+
+def test_stamp_html_caps_distinct_page_sizes(fake: FakeRenderer) -> None:
+    settings = Settings(api_key=API_KEY, max_html_stamp_sizes=2)
+    with make_client(settings, fake) as c:
+        response = c.post(
+            "/v1/pdf/stamp", files={"file": upload(pdf_bytes(3))}, data={"html": "<p>x</p>"},
+            headers=AUTH,
+        )  # fmt: skip
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "limit_exceeded"
+    assert fake.calls == []
+
+
+def test_stamp_html_whole_request_timeout() -> None:
+    slow = FakeRenderer(delay=1.0)
+    settings = Settings(api_key=API_KEY, render_timeout_ms=100)
+    with make_client(settings, slow) as c:
+        response = c.post(
+            "/v1/pdf/stamp", files={"file": upload(pdf_bytes())}, data={"html": "<p>x</p>"},
+            headers=AUTH,
+        )  # fmt: skip
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "render_timeout"

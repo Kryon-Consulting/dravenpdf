@@ -124,6 +124,11 @@ Page fields are **1-based** strings like `1,3-5,8-` (`8-` = page 8 to the end).
 Other PDF endpoints refuse password-protected uploads with 422 `pdf_password`;
 decrypt them first. Passwords never appear in responses or logs.
 
+A `stamp` with `html` renders it once per distinct page size (at most
+`DRAVENPDF_MAX_HTML_STAMP_SIZES`, else 422 `limit_exceeded`); the whole request is
+bounded by `DRAVENPDF_RENDER_TIMEOUT_MS` (504 `render_timeout`). Its time is reported
+under `dravenpdf_render_seconds{source="stamp"}`.
+
 Every endpoint that returns a changed PDF (merge, split, stamp, form fill, encrypt,
 ...) returns it **without signatures** when an input was signed: the change would
 break them, so the signed fields and their widgets are removed. Only `/v1/pdf/sign`
@@ -198,6 +203,7 @@ lives in `src/dravenpdf/server/errors.py`.
 | `DRAVENPDF_RENDER_TIMEOUT_MS` | `30000` | Upper limit; a request's `timeout_ms` is capped at it |
 | `DRAVENPDF_MAX_BODY_MB` | `25` | Request and upload size limit |
 | `DRAVENPDF_MAX_OUTPUT_MB` | `100` | Content limit for ZIP responses and for all images from `pdf-to-images` |
+| `DRAVENPDF_MAX_HTML_STAMP_SIZES` | `10` | Most distinct page sizes a stamp with `html` may have (one render each) |
 | `DRAVENPDF_MAX_IMAGE_MEGAPIXELS` | `40` | Largest page `pdf-to-images` renders (A4 at 600 dpi is 35), and largest image (or image frame) `images-to-pdf` accepts |
 | `DRAVENPDF_ALLOWED_HOSTS` | – | Comma-separated host allowlist for URLs and sub-resources (`*.example.com` allowed). Unset = any public host |
 | `DRAVENPDF_LOG_LEVEL` | `INFO` | |

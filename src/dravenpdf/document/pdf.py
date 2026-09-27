@@ -27,6 +27,7 @@ from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import (
     InvalidPdfError,
+    LimitExceededError,
     PdfOperationError,
     PdfPasswordError,
     SignatureInvalidatedWarning,
@@ -71,6 +72,22 @@ def _pages_source(document: PdfDocument | bytes) -> pikepdf.Pdf:
     if not isinstance(document, PdfDocument):
         document = PdfDocument.from_bytes(document)
     return document._rewritable(stacklevel=4)
+
+
+# RenderOptions fields that stamp_html sets itself: the stamp's first page must be
+# exactly the target page's size, unscaled, upright and without margins or extras.
+_STAMP_LAYOUT: dict[str, object] = {
+    "margins": Margins(top="0", right="0", bottom="0", left="0"),
+    "prefer_css_page_size": False,
+    "landscape": False,
+    "scale": 1.0,
+    "header": None,
+    "footer": None,
+    "page_ranges": None,
+    "tagged": False,
+    "outline": False,
+    "print_background": True,
+}
 
 
 class PdfDocument:
@@ -357,30 +374,38 @@ class PdfDocument:
         pages: Iterable[int] | None = None,
         under: bool = False,
         base_url: str | None = None,
+        options: RenderOptions | None = None,
+        max_sizes: int | None = None,
     ) -> PdfDocument:
         """Render ``html`` at each target page's size and draw it on the page.
 
         The HTML page is transparent except for what it draws, so it works for
-        watermarks, headers, "PAID" badges and letterheads in any language.
+        watermarks, headers, "PAID" badges and letterheads in any language. It is
+        rendered once per distinct page size. ``options`` sets how each render loads
+        and waits (timeout, waits, viewport, locale, ...); its page layout (paper,
+        size, margins, orientation, scale, header/footer, page ranges) is replaced by
+        the page's own. ``max_sizes`` caps the number of renders
+        (:class:`LimitExceededError`).
         """
-        targets = stamp_ops.target_pages(self._pdf, pages)
-        by_size: dict[tuple[float, float], list[int]] = {}
-        for index in targets:
-            size = self.page_size(index)
-            by_size.setdefault((round(size[0], 2), round(size[1], 2)), []).append(index)
+        by_size = await asyncio.to_thread(stamp_ops.pages_by_size, self._pdf, pages)
         if not by_size:
             return self
+        if max_sizes is not None and len(by_size) > max_sizes:
+            raise LimitExceededError(
+                f"the pages have {len(by_size)} different sizes; stamping HTML renders "
+                f"once per size and allows at most {max_sizes}"
+            )
+        base = options or RenderOptions()
         stamps: list[tuple[pikepdf.Pdf, Iterable[int] | None]] = []
         for (width, height), indices in by_size.items():
-            stamp = await renderer.from_html(
-                html,
-                RenderOptions(
-                    width=f"{width / 72:.4f}in",
-                    height=f"{height / 72:.4f}in",
-                    margins=Margins(top="0", right="0", bottom="0", left="0"),
-                ),
-                base_url=base_url,
+            page_options = base.model_copy(
+                update={
+                    **_STAMP_LAYOUT,
+                    "width": f"{width / 72:.4f}in",
+                    "height": f"{height / 72:.4f}in",
+                }
             )
+            stamp = await renderer.from_html(html, page_options, base_url=base_url)
             stamps.append((stamp._pdf, indices))
         # Overlaying is CPU-bound pikepdf work; keep it off the event loop. All sizes go
         # onto one copy, so the document is rewritten once however many sizes it has.

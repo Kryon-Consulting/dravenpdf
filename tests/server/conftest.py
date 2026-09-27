@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ class FakeRenderer:
 
     result: PdfDocument = field(default_factory=lambda: PdfDocument.from_bytes(pdf_bytes()))
     error: Exception | None = None
+    delay: float = 0
     calls: list[tuple[str, Any, RenderOptions | None]] = field(default_factory=list)
     assets: list[dict[str, bytes] | None] = field(default_factory=list)
     auth: list[Any] = field(default_factory=list)
@@ -45,6 +47,8 @@ class FakeRenderer:
         pass
 
     async def _answer(self, kind: str, source: Any, options: RenderOptions | None) -> PdfDocument:
+        if self.delay:
+            await asyncio.sleep(self.delay)
         self.calls.append((kind, source, options))
         if self.error is not None:
             raise self.error
