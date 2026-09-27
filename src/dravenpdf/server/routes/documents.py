@@ -33,6 +33,7 @@ from dravenpdf.server.errors import ApiError
 from dravenpdf.server.schemas import (
     FormFieldOut,
     FormFieldsResponse,
+    PostProcess,
     SignatureOut,
     SignaturesResponse,
     SigningKeyOut,
@@ -181,12 +182,7 @@ async def metadata(
 @router.post("/compress", response_class=Response, responses=PDF_RESPONSE)
 async def compress(file: PdfFile) -> Response:
     doc = await read_pdf(file)
-    data = await asyncio.to_thread(doc.to_bytes, compress=True)
-    return Response(
-        data,
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="compressed.pdf"'},
-    )
+    return await pdf_response(doc, "compressed.pdf", PostProcess(compress=True))
 
 
 @router.post("/encrypt", response_class=Response, responses=PDF_RESPONSE)

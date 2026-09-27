@@ -57,6 +57,13 @@ def parse_page_ranges(spec: str, page_count: int) -> list[int]:
     return indices
 
 
+def optional_page_ranges(spec: str | None, page_count: int) -> list[int] | None:
+    """Like :func:`parse_page_ranges`, but a missing or blank spec means all pages (None)."""
+    if spec is None or not spec.strip():
+        return None
+    return parse_page_ranges(spec, page_count)
+
+
 def normalize_indices(pages: Iterable[int], page_count: int) -> list[int]:
     """Check 0-based indices (negative ones count from the end) and make them positive."""
     result = []

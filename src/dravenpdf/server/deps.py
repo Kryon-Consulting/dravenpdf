@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from fastapi import Header, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from dravenpdf.document.pages import parse_page_ranges
+from dravenpdf.document.pages import optional_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.errors import LimitExceededError
 from dravenpdf.options import RenderOptions
@@ -83,9 +83,7 @@ async def read_pdf(upload: UploadFile, password: str | None = None) -> PdfDocume
 
 def pages_arg(spec: str | None, doc: PdfDocument) -> list[int] | None:
     """1-based page string from a form field, as 0-based indices (None = all)."""
-    if spec is None or not spec.strip():
-        return None
-    return parse_page_ranges(spec, doc.page_count)
+    return optional_page_ranges(spec, doc.page_count)
 
 
 def _apply_post(doc: PdfDocument, post: PostProcess | None) -> bytes:
