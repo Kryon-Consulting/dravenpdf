@@ -60,6 +60,20 @@ def _normalize_host(host: str) -> str:
     return host.strip().lower().rstrip(".")
 
 
+def _host_port(url: str) -> str | None:
+    """``host:port`` as the proxy reports CONNECT targets, or None without a host."""
+    parts = urlsplit(url)
+    if parts.hostname is None:
+        return None
+    port = parts.port or (443 if parts.scheme in ("https", "wss") else 80)
+    return f"{parts.hostname}:{port}"
+
+
+def _raise_if(url: str, reason: str | None) -> None:
+    if reason is not None:
+        raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+
+
 class NetworkPolicy:
     """The shared DNS and allowlist decision used by browser and proxy guards."""
 
@@ -114,9 +128,7 @@ class NetworkPolicy:
         return None
 
     async def check(self, url: str) -> None:
-        reason = await self.reason(url)
-        if reason is not None:
-            raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+        _raise_if(url, await self.reason(url))
 
     async def resolve(self, host: str) -> list[str]:
         try:
@@ -195,9 +207,7 @@ class RequestGuard:
 
     async def check(self, url: str) -> None:
         """Raise :class:`BlockedRequestError` if ``url`` may not be loaded."""
-        reason = await self._reason_to_block(url)
-        if reason is not None:
-            raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+        _raise_if(url, await self._reason_to_block(url))
 
     async def _reason_to_block(self, url: str) -> str | None:
         parts = urlsplit(url)
@@ -216,12 +226,18 @@ class RequestGuard:
         logger.warning("blocked request to %s: %s", url, reason)
         self.blocked.append((url, reason))
 
+    def blocked_error(self) -> BlockedRequestError | None:
+        """The error for the first blocked request, or None if nothing was blocked."""
+        if not self.blocked:
+            return None
+        url, reason = self.blocked[0]
+        more = f" (and {len(self.blocked) - 1} more)" if len(self.blocked) > 1 else ""
+        return BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
+
     def raise_if_blocked(self) -> None:
         """Raise for the first blocked request, if any."""
-        if self.blocked:
-            url, reason = self.blocked[0]
-            more = f" (and {len(self.blocked) - 1} more)" if len(self.blocked) > 1 else ""
-            raise BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
+        if (error := self.blocked_error()) is not None:
+            raise error
 
     async def install(self, context: BrowserContext) -> None:
         """Keep local-file limits and observe redirects; the proxy guards network."""
@@ -233,10 +249,8 @@ class RequestGuard:
         page.on("websocket", self._observe_websocket)
 
     def _observe_websocket(self, ws: WebSocket) -> None:
-        parts = urlsplit(ws.url)
-        if parts.hostname is not None:
-            port = parts.port or (443 if parts.scheme == "wss" else 80)
-            self._observed_urls[f"{parts.hostname}:{port}"] = ws.url
+        if (target := _host_port(ws.url)) is not None:
+            self._observed_urls[target] = ws.url
 
     async def _handle_local(self, route: Route) -> None:
         url = route.request.url
@@ -257,10 +271,8 @@ class RequestGuard:
         origin = origin_of(request.url)
         if origin is not None:
             self._observed_urls[origin] = request.url
-            parts = urlsplit(request.url)
-            if parts.hostname is not None:
-                port = parts.port or (443 if parts.scheme == "https" else 80)
-                self._observed_urls[f"{parts.hostname}:{port}"] = request.url
+            if (target := _host_port(request.url)) is not None:
+                self._observed_urls[target] = request.url
         if parent is not None and origin is not None:
             self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
         hops = 0

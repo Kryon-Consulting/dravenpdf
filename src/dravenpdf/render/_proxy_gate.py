@@ -138,21 +138,16 @@ class ProxyGate:
                 async with asyncio.timeout_at(deadline):
                     await gate.synchronize()
                 return gate
-            except TimeoutError:
-                if gate is not None:
-                    await gate.close()
-                else:
-                    await _stop_orphan(process)
-                    directory.cleanup()
-                if loop.time() >= deadline:
-                    raise
             except BaseException as exc:
                 if gate is not None:
                     await gate.close()
                 else:
                     await _stop_orphan(process)
                     directory.cleanup()
-                if isinstance(exc, asyncio.CancelledError):
+                # Anything else gets another attempt, while the deadline allows.
+                if isinstance(exc, asyncio.CancelledError) or (
+                    isinstance(exc, TimeoutError) and loop.time() >= deadline
+                ):
                     raise
             finally:
                 for fd in (read_fd, write_fd):

@@ -274,12 +274,11 @@ class AsyncRenderer:
         self,
         load: Loader,
         opts: RenderOptions,
-        guard: RequestGuard | None = None,
+        guard: RequestGuard,
         *,
         prepare: PageHook | None = None,
         auth: RenderAuth | None = None,
     ) -> PdfDocument:
-        guard = guard or self._new_guard()
         context_options = opts.to_context_kwargs()
         storage_state = auth.playwright_storage_state() if auth is not None else None
         if storage_state is not None:
@@ -295,6 +294,16 @@ class AsyncRenderer:
                     guard.proxy_policy(new_credential(), deadline), self.pool.proxy_ca, deadline
                 )
                 redirects: RedirectGate | None = None
+                reported = 0  # proxy blocks already handed to the guard
+
+                async def blocked_error() -> BlockedRequestError | None:
+                    """Hand new proxy blocks to the guard; the error, if they should fail."""
+                    nonlocal reported
+                    await gate.synchronize()
+                    guard.add_proxy_blocks(gate.blocked[reported:])
+                    reported = len(gate.blocked)
+                    return guard.blocked_error() if self._on_blocked == "fail" else None
+
                 try:
                     async with self.pool._context_after_admission(
                         deadline=deadline,
@@ -329,11 +338,8 @@ class AsyncRenderer:
                                 await prepare(page)
                             await wait_until_ready(page, opts)
                             await redirects.check()
-                            await gate.synchronize()
-                            guard.add_proxy_blocks(gate.blocked)
-                            reported_blocks = len(gate.blocked)
-                            if self._on_blocked == "fail":
-                                guard.raise_if_blocked()
+                            if blocked := await blocked_error():
+                                raise blocked
                             collector.check(
                                 fail_on_resource_errors=opts.fail_on_resource_errors,
                                 fail_on_page_errors=opts.fail_on_page_errors,
@@ -345,21 +351,14 @@ class AsyncRenderer:
                                 await redirects.check()
                             if isinstance(exc, PlaywrightTimeoutError):
                                 raise
-                            await gate.synchronize()
-                            guard.add_proxy_blocks(gate.blocked)
-                            if guard.blocked and self._on_blocked == "fail":
-                                try:
-                                    guard.raise_if_blocked()
-                                except BlockedRequestError as blocked:
-                                    raise blocked from exc
+                            if blocked := await blocked_error():
+                                raise blocked from exc
                             raise RenderError(f"render failed: {safe_message(exc)}") from exc
                         except RenderError as exc:
                             if isinstance(exc, BlockedRequestError):
                                 raise
-                            await gate.synchronize()
-                            guard.add_proxy_blocks(gate.blocked)
-                            if guard.blocked and self._on_blocked == "fail":
-                                guard.raise_if_blocked()
+                            if blocked := await blocked_error():
+                                raise blocked from exc
                             raise
                         finally:
                             if redirects is not None:
@@ -370,10 +369,8 @@ class AsyncRenderer:
                                     await redirects.close()
                     # Context teardown can finish or abort network flows. Drain those
                     # events while the proxy is still alive before final reporting.
-                    await gate.synchronize()
-                    guard.add_proxy_blocks(gate.blocked[reported_blocks:])
-                    if self._on_blocked == "fail":
-                        guard.raise_if_blocked()
+                    if blocked := await blocked_error():
+                        raise blocked
                 finally:
                     pending = self.pool.pending_context_closures()
                     if pending:
