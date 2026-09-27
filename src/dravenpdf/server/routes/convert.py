@@ -11,11 +11,11 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from dravenpdf.document.images import ImageFormat
+from dravenpdf.document.pages import optional_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.options import PaperSize
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
-    pages_arg,
     pdf_response,
     read_pdf,
     require_api_key,
@@ -56,7 +56,7 @@ async def pdf_to_images(
     pages: Annotated[str | None, Form(description="1-based pages (default: all).")] = None,
 ) -> Response:
     doc = await read_pdf(file)
-    targets = pages_arg(pages, doc) or list(range(doc.page_count))
+    targets = optional_page_ranges(pages, doc.page_count) or list(range(doc.page_count))
     settings = settings_of(request)
     # Nothing is rendered yet: each page is rendered, encoded and written to the ZIP
     # one at a time inside zip_response's worker thread.

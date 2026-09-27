@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from dravenpdf.errors import DravenPdfError
+from dravenpdf.errors import describe_validation_errors as describe_validation_errors
 
 logger = logging.getLogger("dravenpdf.server")
 
@@ -50,14 +49,6 @@ def error_response(code: str, message: str, headers: dict[str, str] | None = Non
         status_code=STATUS_BY_CODE.get(code, 500),
         headers=headers,
     )
-
-
-def describe_validation_errors(errors: Sequence[Any]) -> str:
-    """One line from pydantic/FastAPI validation errors: "field.path: message; ..."."""
-    details = "; ".join(
-        f"{'.'.join(str(p) for p in e['loc'] if p != 'body')}: {e['msg']}" for e in errors
-    )
-    return details or "invalid request"
 
 
 def install(app: FastAPI) -> None:

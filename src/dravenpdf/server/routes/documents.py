@@ -6,7 +6,6 @@ Page fields are 1-based strings like "1,3-5,8-".
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Iterator
 from dataclasses import asdict
 from typing import Annotated
@@ -14,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
-from dravenpdf.document.pages import parse_page_ranges
+from dravenpdf.document.pages import optional_page_ranges, parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
@@ -22,7 +21,7 @@ from dravenpdf.options import RenderOptions
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
     ZIP_RESPONSE,
-    pages_arg,
+    json_object_field,
     pdf_response,
     read_pdf,
     renderer_of,
@@ -102,7 +101,9 @@ async def rotate(
     pages: PagesField = None,
 ) -> Response:
     doc = await read_pdf(file)
-    result = await asyncio.to_thread(doc.rotate, degrees, pages_arg(pages, doc))
+    result = await asyncio.to_thread(
+        doc.rotate, degrees, optional_page_ranges(pages, doc.page_count)
+    )
     return await pdf_response(result, "rotated.pdf")
 
 
@@ -146,7 +147,7 @@ async def stamp(
     if sum(x is not None for x in (text, image, html)) != 1:
         raise ApiError("invalid_request", "send exactly one of text, image or html")
     doc = await read_pdf(file)
-    targets = pages_arg(pages, doc)
+    targets = optional_page_ranges(pages, doc.page_count)
     # opacity=None: each kind's own default (0.3 for text, else 1).
     if text is not None:
         result = await asyncio.to_thread(
@@ -252,14 +253,10 @@ async def form_fill(
     password: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Fill form fields; all values are checked before any is applied."""
-    try:
-        parsed = json.loads(values)
-    except json.JSONDecodeError as exc:
-        raise ApiError("invalid_request", f"values: not valid JSON ({exc.msg})") from None
-    if not isinstance(parsed, dict) or not all(
-        isinstance(v, str | bool) or v is None for v in parsed.values()
-    ):
-        raise ApiError("invalid_request", "values: must be an object of text, true/false or null")
+    expected = "an object of text, true/false or null"
+    parsed = json_object_field(values, "values", expected) or {}
+    if not all(isinstance(v, str | bool) or v is None for v in parsed.values()):
+        raise ApiError("invalid_request", f"values: must be {expected}")
     doc = await read_pdf(file, password)
     result = await asyncio.to_thread(doc.fill_form, parsed, flatten=flatten)
     return await pdf_response(result, "filled.pdf")

@@ -7,7 +7,8 @@ and maps it to a status code in one place (``dravenpdf.server.errors``).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dravenpdf.render.report import RenderReport
@@ -128,3 +129,12 @@ __all__ = [
     "SigningError",
     "TemplateError",
 ]
+
+
+def describe_validation_errors(errors: Sequence[Mapping[str, Any]]) -> str:
+    """One line from pydantic/FastAPI validation errors: "field.path: message; ...".
+    Uses only each error's location and message, never its input (which may be secret)."""
+    details = "; ".join(
+        f"{'.'.join(str(p) for p in e['loc'] if p != 'body')}: {e['msg']}" for e in errors
+    )
+    return details or "invalid request"

@@ -1012,3 +1012,13 @@ def test_stamp_html_whole_request_timeout() -> None:
 
     assert response.status_code == 504
     assert response.json()["error"]["code"] == "render_timeout"
+
+
+def test_body_limit_response_shape(fake: FakeRenderer) -> None:
+    with make_client(Settings(api_key=API_KEY, max_body_mb=0.0001), fake) as c:
+        response = c.post("/v1/render/html", content=b"x" * 1000, headers=AUTH)
+
+    assert response.status_code == 413
+    assert response.headers["content-type"] == "application/json"
+    assert response.json()["error"]["code"] == "payload_too_large"
+    assert response.json()["error"]["message"] == "request body is larger than 104 bytes"

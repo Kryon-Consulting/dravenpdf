@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from dravenpdf.server.errors import error_response
 
 logger = logging.getLogger("dravenpdf.server")
 
@@ -61,7 +62,7 @@ class BodyLimitMiddleware:
             return
         length = dict(scope["headers"]).get(b"content-length")
         if length is not None and length.isdigit() and int(length) > self.max_bytes:
-            await self._reject(send)
+            await self._reject(scope, receive, send)
             return
 
         received = 0
@@ -92,28 +93,13 @@ class BodyLimitMiddleware:
             if not too_large:
                 raise
         if too_large and not sent:
-            await self._reject(send)
+            await self._reject(scope, receive, send)
 
-    async def _reject(self, send: Send) -> None:
-        body = json.dumps(
-            {
-                "error": {
-                    "code": "payload_too_large",
-                    "message": f"request body is larger than {self.max_bytes} bytes",
-                }
-            }
-        ).encode()
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
-                ],
-            }
+    async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response = error_response(
+            "payload_too_large", f"request body is larger than {self.max_bytes} bytes"
         )
-        await send({"type": "http.response.body", "body": body})
+        await response(scope, receive, send)
 
 
 class _TooLarge(Exception):

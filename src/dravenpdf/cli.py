@@ -27,6 +27,7 @@ from dravenpdf.errors import (
     DravenPdfError,
     PdfOperationError,
     PdfPasswordError,
+    describe_validation_errors,
 )
 from dravenpdf.options import (
     ColorScheme,
@@ -89,15 +90,18 @@ def _load_auth(path: Path | None) -> RenderAuth | None:
             return RenderAuth(storage_state=StorageState.model_validate(raw))
         return RenderAuth.model_validate(raw)
     except ValidationError as exc:
-        problems = "; ".join(
-            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
-            for e in exc.errors(include_input=False)
-        )
+        problems = describe_validation_errors(exc.errors(include_input=False))
         _fail(f"--auth {path}: {problems}")
 
 
-def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
-    return optional_page_ranges(spec, doc.page_count)
+def _read_json_object(path: Path, flag: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _fail(f"{flag} {path}: not valid JSON")
+    if not isinstance(value, dict):
+        _fail(f"{flag} must contain a JSON object")
+    return value
 
 
 def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> None:
@@ -318,9 +322,7 @@ def template(
 ) -> None:
     """Render a Jinja2 template with JSON data. Assets load from the template's folder."""
     render_auth = _load_auth(auth)
-    values = json.loads(data.read_text()) if data is not None else {}
-    if not isinstance(values, dict):
-        _fail("--data must contain a JSON object")
+    values = _read_json_object(data, "--data") if data is not None else {}
     options = _render_options(
         paper, landscape, None, None, footer, "networkidle", None, False, 30, "print"
     )
@@ -383,7 +385,7 @@ def rotate(
 ) -> None:
     """Rotate pages."""
     doc = PdfDocument.open(input)
-    _write_pdf(doc.rotate(degrees, _pages(pages, doc)), output)
+    _write_pdf(doc.rotate(degrees, optional_page_ranges(pages, doc.page_count)), output)
 
 
 @app.command()
@@ -426,7 +428,7 @@ def stamp(
     if len(chosen) != 1:
         _fail("give exactly one of --text, --image, --html or --pdf")
     doc = PdfDocument.open(input)
-    targets = _pages(pages, doc)
+    targets = optional_page_ranges(pages, doc.page_count)
     # opacity=None: each kind's own default (0.3 for text, else 1).
     if text is not None:
         result = doc.stamp_text(
@@ -468,7 +470,6 @@ def metadata(
         return
     if output is None:
         _fail("give -o to write the changed copy")
-    assert output is not None
     _write_pdf(doc.set_metadata(**changes), output)
 
 
@@ -490,9 +491,7 @@ def fill_form(
     flatten: Annotated[bool, typer.Option(help="Burn the values in and remove the form.")] = False,
 ) -> None:
     """Fill form fields (text, true/false for checkboxes, option names)."""
-    values = json.loads(data.read_text())
-    if not isinstance(values, dict):
-        _fail("--data must contain a JSON object")
+    values = _read_json_object(data, "--data")
     _write_pdf(PdfDocument.open(input).fill_form(values, flatten=flatten), output)
 
 
@@ -663,7 +662,7 @@ def images(
 ) -> None:
     """Render pages to images: page-1.png, page-2.png, ..."""
     doc = PdfDocument.open(input)
-    targets = _pages(pages, doc) or list(range(doc.page_count))
+    targets = optional_page_ranges(pages, doc.page_count) or list(range(doc.page_count))
     output.mkdir(parents=True, exist_ok=True)
     extension = "jpg" if fmt == "jpeg" else "png"
     for index, data in zip(targets, doc.to_images(dpi=dpi, fmt=fmt, pages=targets), strict=True):
