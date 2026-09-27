@@ -6,7 +6,6 @@ Page fields are 1-based strings like "1,3-5,8-".
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Iterator
 from dataclasses import asdict
 from typing import Annotated
@@ -14,19 +13,22 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
-from dravenpdf.document.pages import parse_page_ranges
+from dravenpdf.document.pages import optional_page_ranges, parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
+from dravenpdf.options import RenderOptions
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
     ZIP_RESPONSE,
-    pages_arg,
+    json_object_field,
     pdf_response,
     read_pdf,
     renderer_of,
     require_api_key,
     settings_of,
+    timed,
+    within_deadline,
     zip_response,
 )
 from dravenpdf.server.errors import ApiError
@@ -99,7 +101,9 @@ async def rotate(
     pages: PagesField = None,
 ) -> Response:
     doc = await read_pdf(file)
-    result = await asyncio.to_thread(doc.rotate, degrees, pages_arg(pages, doc))
+    result = await asyncio.to_thread(
+        doc.rotate, degrees, optional_page_ranges(pages, doc.page_count)
+    )
     return await pdf_response(result, "rotated.pdf")
 
 
@@ -143,24 +147,27 @@ async def stamp(
     if sum(x is not None for x in (text, image, html)) != 1:
         raise ApiError("invalid_request", "send exactly one of text, image or html")
     doc = await read_pdf(file)
-    targets = pages_arg(pages, doc)
+    targets = optional_page_ranges(pages, doc.page_count)
+    # opacity=None: each kind's own default (0.3 for text, else 1).
     if text is not None:
         result = await asyncio.to_thread(
-            doc.stamp_text, text, font_size=font_size, color=color,
-            opacity=0.3 if opacity is None else opacity, angle=angle,
-            position=position, margin=margin, pages=targets, under=under,
+            doc.stamp_text, text, font_size=font_size, color=color, opacity=opacity,
+            angle=angle, position=position, margin=margin, pages=targets, under=under,
         )  # fmt: skip
     elif image is not None:
         result = await asyncio.to_thread(
             doc.stamp_image, await image.read(), width=width, position=position, margin=margin,
-            opacity=1.0 if opacity is None else opacity, pages=targets, under=under,
+            opacity=opacity, pages=targets, under=under,
         )  # fmt: skip
     else:
         assert html is not None
-        result = await doc.stamp_html(
-            renderer_of(request), html, opacity=1.0 if opacity is None else opacity,
-            pages=targets, under=under,
+        settings = settings_of(request)
+        work = doc.stamp_html(
+            renderer_of(request), html, opacity=opacity, pages=targets, under=under,
+            options=RenderOptions(timeout_ms=settings.render_timeout_ms),
+            max_sizes=settings.max_html_stamp_sizes,
         )  # fmt: skip
+        result = await timed(request, "stamp", within_deadline(settings.render_timeout_ms, work))
     return await pdf_response(result, "stamped.pdf")
 
 
@@ -204,12 +211,6 @@ async def encrypt(
     allow_forms: Annotated[bool, Form()] = True,
 ) -> Response:
     """Encrypt with AES-256. The allow_* flags are advisory (honoured by viewers)."""
-    if (
-        not user_password
-        and not owner_password
-        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
-    ):
-        raise ApiError("invalid_request", "set a password or restrict a permission")
     doc = await read_pdf(file, password)
     result = await asyncio.to_thread(
         doc.encrypt,
@@ -252,14 +253,10 @@ async def form_fill(
     password: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Fill form fields; all values are checked before any is applied."""
-    try:
-        parsed = json.loads(values)
-    except json.JSONDecodeError as exc:
-        raise ApiError("invalid_request", f"values: not valid JSON ({exc.msg})") from None
-    if not isinstance(parsed, dict) or not all(
-        isinstance(v, str | bool) or v is None for v in parsed.values()
-    ):
-        raise ApiError("invalid_request", "values: must be an object of text, true/false or null")
+    expected = "an object of text, true/false or null"
+    parsed = json_object_field(values, "values", expected) or {}
+    if not all(isinstance(v, str | bool) or v is None for v in parsed.values()):
+        raise ApiError("invalid_request", f"values: must be {expected}")
     doc = await read_pdf(file, password)
     result = await asyncio.to_thread(doc.fill_form, parsed, flatten=flatten)
     return await pdf_response(result, "filled.pdf")
@@ -322,8 +319,6 @@ async def sign(
     doc = await read_pdf(file, password)
     box = None
     if page is not None and x is not None and y is not None and width and height:
-        if page > doc.page_count:
-            raise ApiError("invalid_request", f"page {page} is past the last page")
         box = SignatureBox(page=page - 1, x=x, y=y, width=width, height=height)
     signed = await asyncio.to_thread(
         doc.sign, keys[key], field_name=field_name, reason=reason, location=location,

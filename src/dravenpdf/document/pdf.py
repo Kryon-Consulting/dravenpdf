@@ -6,7 +6,7 @@ import asyncio
 import io
 import secrets
 import warnings
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -27,6 +27,7 @@ from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
 from dravenpdf.document.stamp import Position
 from dravenpdf.errors import (
     InvalidPdfError,
+    LimitExceededError,
     PdfOperationError,
     PdfPasswordError,
     SignatureInvalidatedWarning,
@@ -73,6 +74,40 @@ def _pages_source(document: PdfDocument | bytes) -> pikepdf.Pdf:
     return document._rewritable(stacklevel=4)
 
 
+# RenderOptions fields that stamp_html sets itself: the stamp's first page must be
+# exactly the target page's size, unscaled, upright and without margins or extras.
+_STAMP_LAYOUT: dict[str, object] = {
+    "margins": Margins(top="0", right="0", bottom="0", left="0"),
+    "prefer_css_page_size": False,
+    "landscape": False,
+    "scale": 1.0,
+    "header": None,
+    "footer": None,
+    "page_ranges": None,
+    "tagged": False,
+    "outline": False,
+    "print_background": True,
+}
+
+
+def _opacity(opacity: float | None, default: float = 1.0) -> float:
+    """``opacity``, or the stamp kind's default when it is None (unset)."""
+    return default if opacity is None else opacity
+
+
+def _check_box(box: SignatureBox, page_count: int) -> None:
+    if box.page < 0:
+        raise PdfOperationError("signature page must not be negative (pages are 0-based)")
+    if box.page >= page_count:
+        raise PdfOperationError(
+            f"signature page {box.page + 1} is past the last page ({page_count})"
+        )
+    if box.x < 0 or box.y < 0:
+        raise PdfOperationError("signature box x and y must not be negative")
+    if box.width <= 0 or box.height <= 0:
+        raise PdfOperationError("signature box width and height must be positive")
+
+
 class PdfDocument:
     """A PDF held in memory, backed by :class:`pikepdf.Pdf`.
 
@@ -97,6 +132,8 @@ class PdfDocument:
         # The bytes this document was read from, encrypted or not: what
         # verify_signatures() checks. Never written out (see _source for that).
         self._original: bytes | None = None
+        # _readable_bytes() of a derived document, written once (its PDF never changes).
+        self._readable: bytes | None = None
         self.render_report: RenderReport | None = None
         """Set on documents returned by a renderer: what failed while rendering.
         Documents derived from this one (rotate, merge, ...) don't carry it."""
@@ -139,11 +176,15 @@ class PdfDocument:
         paper: PaperSize | None = None,
         landscape: bool = False,
         margin: float = 0,
+        max_pixels: int | None = None,
     ) -> PdfDocument:
         """One page per image. Without ``paper``, pages are the images' own size;
-        with it, images are fitted inside ``margin`` (points), keeping aspect ratio."""
+        with it, images are fitted inside ``margin`` (points), keeping aspect ratio.
+        ``max_pixels`` refuses larger images (:class:`LimitExceededError`)."""
         return cls.from_bytes(
-            image_ops.images_to_pdf(images, paper=paper, landscape=landscape, margin=margin)
+            image_ops.images_to_pdf(
+                images, paper=paper, landscape=landscape, margin=margin, max_pixels=max_pixels
+            )
         )
 
     @classmethod
@@ -246,7 +287,7 @@ class PdfDocument:
             title=title, author=author, subject=subject,
             keywords=keywords, creator=creator, producer=producer,
         )  # fmt: skip
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         for name in _EDITABLE:
             value = values[name]
             if value is None:
@@ -270,7 +311,7 @@ class PdfDocument:
         *,
         font_size: float = 48,
         color: str = "#FF0000",
-        opacity: float = 0.3,
+        opacity: float | None = None,
         angle: float = 45,
         position: Position = "center",
         margin: float = 36,
@@ -281,11 +322,12 @@ class PdfDocument:
 
         Western European (cp1252) characters only; use :meth:`stamp_html` for other
         scripts or richer styling. ``margin`` (points) applies to non-center positions.
+        ``opacity`` defaults to 0.3 (as for every stamp, ``None`` means the default).
         """
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         stamp_ops.stamp_text(
-            result, text, font_size=font_size, color=color, opacity=opacity, angle=angle,
-            position=position, margin=margin, pages=pages, under=under,
+            result, text, font_size=font_size, color=color, opacity=_opacity(opacity, 0.3),
+            angle=angle, position=position, margin=margin, pages=pages, under=under,
         )  # fmt: skip
         return self._derive(result)
 
@@ -296,16 +338,16 @@ class PdfDocument:
         width: float | None = None,
         position: Position = "center",
         margin: float = 36,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
     ) -> PdfDocument:
         """Image stamp (PNG, JPEG, ...; transparency kept). ``width`` in points,
         default the image's size at 96 dpi; shrunk to fit inside the margins."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         stamp_ops.stamp_image(
             result, image, width=width, position=position, margin=margin,
-            opacity=opacity, pages=pages, under=under,
+            opacity=_opacity(opacity), pages=pages, under=under,
         )  # fmt: skip
         return self._derive(result)
 
@@ -314,15 +356,15 @@ class PdfDocument:
         stamp: PdfDocument | bytes,
         *,
         stamp_page: int = 0,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
     ) -> PdfDocument:
         """Draw a page of another PDF (letterhead, form background, ...) on each page,
         scaled to fit and centered. ``under=True`` puts it behind the content."""
         return self._overlay_all(
-            [(_as_pdf(stamp), pages)], stamp_page=stamp_page, opacity=opacity, under=under,
-            stacklevel=4,
+            [(_as_pdf(stamp), pages)], stamp_page=stamp_page, opacity=_opacity(opacity),
+            under=under, stacklevel=4,
         )  # fmt: skip
 
     def _overlay_all(
@@ -335,7 +377,7 @@ class PdfDocument:
         stacklevel: int = 3,
     ) -> PdfDocument:
         """Overlay each (stamp, pages) pair onto one copy of this document."""
-        result = ops.clone(self._rewritable(stacklevel=stacklevel))
+        result = self._writable_copy(stacklevel=stacklevel + 1)
         for stamp, pages in stamps:
             stamp_ops.overlay_page(
                 result, stamp, stamp_page=stamp_page, opacity=opacity, pages=pages, under=under
@@ -347,38 +389,48 @@ class PdfDocument:
         renderer: HtmlRenderer,
         html: str,
         *,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
         base_url: str | None = None,
+        options: RenderOptions | None = None,
+        max_sizes: int | None = None,
     ) -> PdfDocument:
         """Render ``html`` at each target page's size and draw it on the page.
 
         The HTML page is transparent except for what it draws, so it works for
-        watermarks, headers, "PAID" badges and letterheads in any language.
+        watermarks, headers, "PAID" badges and letterheads in any language. It is
+        rendered once per distinct page size. ``options`` sets how each render loads
+        and waits (timeout, waits, viewport, locale, ...); its page layout (paper,
+        size, margins, orientation, scale, header/footer, page ranges) is replaced by
+        the page's own. ``max_sizes`` caps the number of renders
+        (:class:`LimitExceededError`).
         """
-        targets = stamp_ops.target_pages(self._pdf, pages)
-        by_size: dict[tuple[float, float], list[int]] = {}
-        for index in targets:
-            size = self.page_size(index)
-            by_size.setdefault((round(size[0], 2), round(size[1], 2)), []).append(index)
+        by_size = await asyncio.to_thread(stamp_ops.pages_by_size, self._pdf, pages)
         if not by_size:
             return self
+        if max_sizes is not None and len(by_size) > max_sizes:
+            raise LimitExceededError(
+                f"the pages have {len(by_size)} different sizes; stamping HTML renders "
+                f"once per size and allows at most {max_sizes}"
+            )
+        base = options or RenderOptions()
         stamps: list[tuple[pikepdf.Pdf, Iterable[int] | None]] = []
         for (width, height), indices in by_size.items():
-            stamp = await renderer.from_html(
-                html,
-                RenderOptions(
-                    width=f"{width / 72:.4f}in",
-                    height=f"{height / 72:.4f}in",
-                    margins=Margins(top="0", right="0", bottom="0", left="0"),
-                ),
-                base_url=base_url,
+            page_options = base.model_copy(
+                update={
+                    **_STAMP_LAYOUT,
+                    "width": f"{width / 72:.4f}in",
+                    "height": f"{height / 72:.4f}in",
+                }
             )
+            stamp = await renderer.from_html(html, page_options, base_url=base_url)
             stamps.append((stamp._pdf, indices))
         # Overlaying is CPU-bound pikepdf work; keep it off the event loop. All sizes go
         # onto one copy, so the document is rewritten once however many sizes it has.
-        return await asyncio.to_thread(self._overlay_all, stamps, opacity=opacity, under=under)
+        return await asyncio.to_thread(
+            self._overlay_all, stamps, opacity=_opacity(opacity), under=under
+        )
 
     # ------------------------------------------------------------------ images and text
 
@@ -407,6 +459,42 @@ class PdfDocument:
             max_total_bytes=max_total_bytes,
         )
 
+    def iter_images(
+        self,
+        *,
+        dpi: int = 150,
+        fmt: ImageFormat = "png",
+        pages: Iterable[int] | None = None,
+        jpeg_quality: int = 85,
+        max_pixels: int | None = None,
+        max_total_bytes: int | None = None,
+    ) -> Generator[bytes, None, None]:
+        """Like :meth:`to_images`, but renders each page only when it is asked for,
+        so a caller that writes and drops each image holds one at a time.
+
+        The options are checked now; everything else (writing the file out for
+        pdfium, opening it, rendering) happens as the iterator is consumed, so
+        consume it in a worker thread from async code. Close it (``contextlib.closing``)
+        when stopping early, so pdfium's copy is released in that same thread.
+        """
+        image_ops.check_image_options(dpi, fmt, jpeg_quality)
+        targets = None if pages is None else list(pages)
+        return self._iter_images(dpi, fmt, targets, jpeg_quality, max_pixels, max_total_bytes)
+
+    def _iter_images(
+        self,
+        dpi: int,
+        fmt: ImageFormat,
+        pages: list[int] | None,
+        jpeg_quality: int,
+        max_pixels: int | None,
+        max_total_bytes: int | None,
+    ) -> Generator[bytes, None, None]:
+        yield from image_ops.iter_pdf_to_images(
+            self._readable_bytes(), dpi=dpi, fmt=fmt, pages=pages,
+            jpeg_quality=jpeg_quality, max_pixels=max_pixels, max_total_bytes=max_total_bytes,
+        )  # fmt: skip
+
     def extract_text(self) -> list[str]:
         """Text of each page. Scanned pages have none (no OCR)."""
         return text_ops.extract_text(self._readable_bytes())
@@ -422,13 +510,13 @@ class PdfDocument:
         checkboxes, an option name for radio groups. Everything is checked first, so
         either all values apply or none (``PdfOperationError``). ``flatten=True`` also
         burns the values into the pages and removes the form."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         form_ops.fill(result, values, flatten=flatten)
         return self._derive(result)
 
     def flatten_form(self) -> PdfDocument:
         """Burn the current field values into the pages and remove the form."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         form_ops.flatten_form(result)
         return self._derive(result)
 
@@ -464,6 +552,8 @@ class PdfDocument:
                 "can't sign a document with pending encryption: encrypting after signing "
                 "would rewrite the file; sign an unencrypted document"
             )
+        if box is not None:
+            _check_box(box, self.page_count)
         signed = sign_ops.sign(
             self.to_bytes(), key, field_name=field_name, reason=reason, location=location,
             contact=contact, box=box, timestamp_url=timestamp_url,
@@ -504,9 +594,17 @@ class PdfDocument:
         the restrictions can't be lifted with a password. The ``allow_*`` flags are
         honoured by well-behaved viewers only: anyone who can open the file can
         technically copy or print it. Use a user password to actually protect content.
-        Operations on the result keep its encryption.
+        Operations on the result keep its encryption. With no password and no
+        restriction there is nothing to protect, so that raises
+        :class:`PdfOperationError`.
         """
         user = reveal(user_password)
+        if (
+            not user
+            and owner_password is None
+            and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
+        ):
+            raise PdfOperationError("set a password or restrict a permission")
         owner = reveal(owner_password) if owner_password is not None else secrets.token_urlsafe(32)
         if not owner:
             raise PdfOperationError("owner_password must not be empty")
@@ -520,13 +618,13 @@ class PdfDocument:
             print_lowres=allow_print,
             print_highres=allow_print,
         )
-        result = self._derive(ops.clone(self._rewritable()))
+        result = self._derive(self._writable_copy())
         result._encryption = pikepdf.Encryption(owner=owner, user=user, allow=permissions)
         return result
 
     def decrypt(self) -> PdfDocument:
         """A copy that is written without encryption."""
-        result = self._derive(ops.clone(self._rewritable()))
+        result = self._derive(self._writable_copy())
         result._encryption = None
         return result
 
@@ -555,6 +653,13 @@ class PdfDocument:
         )
         return unsigned
 
+    def _writable_copy(self, *, stacklevel: int = 4) -> pikepdf.Pdf:
+        """A private copy for an operation to modify: :meth:`_rewritable`'s PDF, which
+        is already a fresh copy for a signed document, else a clone of this one.
+        ``stacklevel`` counts from :meth:`_rewritable`, as its warning is raised there."""
+        source = self._rewritable(stacklevel=stacklevel)
+        return ops.clone(source) if source is self._pdf else source
+
     def _derive(self, pdf: pikepdf.Pdf) -> PdfDocument:
         """A document made from this one: keeps its pending encryption.
 
@@ -574,12 +679,14 @@ class PdfDocument:
 
     def _readable_bytes(self) -> bytes:
         """The document as a file for reading it (images, text, verification):
-        unencrypted, and with nothing removed."""
+        unencrypted, and with nothing removed. Written once, then kept."""
         if self._source is not None:
             return self._source
-        buffer = io.BytesIO()
-        self._pdf.save(buffer)
-        return buffer.getvalue()
+        if self._readable is None:
+            buffer = io.BytesIO()
+            self._pdf.save(buffer)
+            self._readable = buffer.getvalue()
+        return self._readable
 
     # ------------------------------------------------------------------ output
 

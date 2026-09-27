@@ -161,3 +161,18 @@ def test_render_rejects_bad_auth_file_without_echoing_it(
     assert message in result.output
     assert "s3cret" not in result.output
     assert not (tmp_path / "out.pdf").exists()
+
+
+@pytest.mark.parametrize("command", ["template", "fill-form"])
+def test_invalid_json_data_is_a_clean_error(tmp_path: Path, pdf: Path, command: str) -> None:
+    (tmp_path / "t.html").write_text("x")
+    (tmp_path / "d.json").write_text("{not json")
+    source = str(tmp_path / "t.html") if command == "template" else str(pdf)
+
+    result = runner.invoke(
+        app, [command, source, "--data", str(tmp_path / "d.json"), "-o", str(tmp_path / "o.pdf")]
+    )
+
+    assert result.exit_code == 1
+    assert "not valid JSON" in result.output
+    assert isinstance(result.exception, SystemExit)

@@ -21,6 +21,7 @@ from pyhanko.sign.timestamps.dummy_client import DummyTimeStamper
 
 from dravenpdf import (
     PdfDocument,
+    PdfOperationError,
     PdfPasswordError,
     SignatureBox,
     SignatureInvalidatedWarning,
@@ -597,3 +598,71 @@ def test_cli_verify_encrypted_file(tmp_path: Path, key: SigningKey) -> None:
     assert checked.exit_code == 0, checked.output
     assert json.loads(checked.stdout)[0]["ok"] is True
     assert isinstance(missing.exception, PdfPasswordError)
+
+
+@pytest.mark.parametrize(
+    ("edit", "copies"),
+    [
+        (lambda doc: doc.stamp_text("x"), 1),
+        (lambda doc: doc.set_metadata(title="x"), 1),
+        (lambda doc: doc.encrypt(user_password="u"), 1),
+        # One copy of the input, and _detach() of the result (it has foreign pages).
+        (lambda doc: doc.overlay(blank(1)), 2),
+    ],
+)
+def test_signed_edits_clone_once_and_warn_at_the_caller(
+    key: SigningKey,
+    monkeypatch: pytest.MonkeyPatch,
+    edit: Callable[[PdfDocument], object],
+    copies: int,
+) -> None:
+    from dravenpdf.document import pages as ops
+
+    signed = signed_visibly(key)
+    clones: list[object] = []
+    real_clone = ops.clone
+
+    def counting_clone(pdf: pikepdf.Pdf) -> pikepdf.Pdf:
+        clones.append(pdf)
+        return real_clone(pdf)
+
+    monkeypatch.setattr(ops, "clone", counting_clone)
+    with pytest.warns(SignatureInvalidatedWarning) as caught:
+        edit(signed)
+
+    assert len(clones) == copies
+    assert caught[0].filename == __file__
+
+
+@pytest.mark.parametrize(
+    ("box", "message"),
+    [
+        (SignatureBox(page=5, x=10, y=10, width=100, height=40), "past the last page"),
+        (SignatureBox(page=-1, x=10, y=10, width=100, height=40), "must not be negative"),
+        (SignatureBox(page=0, x=-1, y=10, width=100, height=40), "x and y"),
+        (SignatureBox(page=0, x=10, y=10, width=0, height=40), "width and height"),
+    ],
+)
+def test_sign_checks_the_box(key: SigningKey, box: SignatureBox, message: str) -> None:
+    with pytest.raises(PdfOperationError, match=message):
+        blank().sign(key, box=box)
+
+
+def test_cli_visible_page_is_one_based(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from dravenpdf.cli import app
+
+    (tmp_path / "key.p12").write_bytes(material()[0])
+    blank().save(tmp_path / "in.pdf")
+
+    result = CliRunner().invoke(
+        app,
+        ["sign", str(tmp_path / "in.pdf"), "-o", str(tmp_path / "s.pdf"),
+         "--key", str(tmp_path / "key.p12"), "--visible", "0,10,10,100,40"],
+        env={"DRAVENPDF_KEY_PASSWORD": PASSWORD},
+    )  # fmt: skip
+
+    assert result.exit_code == 1
+    assert "1-based" in result.output
+    assert not (tmp_path / "s.pdf").exists()

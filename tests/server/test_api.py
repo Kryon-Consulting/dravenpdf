@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -18,6 +19,7 @@ from dravenpdf import (
     BlockedRequestError,
     HttpError,
     IncompleteRenderError,
+    LimitExceededError,
     PdfDocument,
     PoolExhaustedError,
     RenderError,
@@ -725,6 +727,16 @@ def test_encrypt_needs_a_password_or_restriction(client: TestClient) -> None:
     response = client.post("/v1/pdf/encrypt", files={"file": upload(pdf_bytes())}, headers=AUTH)
 
     assert response.status_code == 400
+    assert "set a password or restrict a permission" in response.json()["error"]["message"]
+
+
+def test_encrypt_empty_owner_password_means_random(client: TestClient) -> None:
+    response = client.post(
+        "/v1/pdf/encrypt", files={"file": upload(pdf_bytes())},
+        data={"owner_password": "", "allow_copy": "false"}, headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
 
 
 # ---------------------------------------------------------------- forms
@@ -928,3 +940,85 @@ def test_signing_keys_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings()
 
     assert str(settings.signing_keys["a"].pkcs12) == "/keys/a.p12"
+
+
+def test_failed_zip_closes_its_generator_in_the_worker_thread() -> None:
+    closed_in: list[threading.Thread] = []
+
+    def files() -> Iterator[tuple[str, bytes]]:
+        try:
+            yield "a", b"x" * 10
+            yield "b", b"x" * 10
+        finally:
+            closed_in.append(threading.current_thread())
+
+    try:
+        deps._write_zip(files(), 15, False)
+    except LimitExceededError:
+        # Checked while the traceback (which references the generator) is still alive.
+        assert closed_in == [threading.current_thread()]
+    else:
+        pytest.fail("no LimitExceededError")
+
+
+def test_images_to_pdf_pixel_cap(fake: FakeRenderer) -> None:
+    buffer = io.BytesIO()
+    Image.new("RGB", (50, 50)).save(buffer, "PNG")
+    settings = Settings(api_key=API_KEY, max_image_megapixels=0.001)  # 1,000 pixels
+    with make_client(settings, fake) as c:
+        response = c.post(
+            "/v1/convert/images-to-pdf",
+            files={"files": ("a.png", buffer.getvalue(), "image/png")},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "limit_exceeded"
+
+
+def test_stamp_html_uses_the_server_timeout(client: TestClient, fake: FakeRenderer) -> None:
+    response = client.post(
+        "/v1/pdf/stamp", files={"file": upload(pdf_bytes())}, data={"html": "<p>x</p>"},
+        headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
+    (_, _, options) = fake.calls[0]
+    assert options is not None
+    assert options.timeout_ms == 10_000
+
+
+def test_stamp_html_caps_distinct_page_sizes(fake: FakeRenderer) -> None:
+    settings = Settings(api_key=API_KEY, max_html_stamp_sizes=2)
+    with make_client(settings, fake) as c:
+        response = c.post(
+            "/v1/pdf/stamp", files={"file": upload(pdf_bytes(3))}, data={"html": "<p>x</p>"},
+            headers=AUTH,
+        )  # fmt: skip
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "limit_exceeded"
+    assert fake.calls == []
+
+
+def test_stamp_html_whole_request_timeout() -> None:
+    slow = FakeRenderer(delay=1.0)
+    settings = Settings(api_key=API_KEY, render_timeout_ms=100)
+    with make_client(settings, slow) as c:
+        response = c.post(
+            "/v1/pdf/stamp", files={"file": upload(pdf_bytes())}, data={"html": "<p>x</p>"},
+            headers=AUTH,
+        )  # fmt: skip
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "render_timeout"
+
+
+def test_body_limit_response_shape(fake: FakeRenderer) -> None:
+    with make_client(Settings(api_key=API_KEY, max_body_mb=0.0001), fake) as c:
+        response = c.post("/v1/render/html", content=b"x" * 1000, headers=AUTH)
+
+    assert response.status_code == 413
+    assert response.headers["content-type"] == "application/json"
+    assert response.json()["error"]["code"] == "payload_too_large"
+    assert response.json()["error"]["message"] == "request body is larger than 104 bytes"

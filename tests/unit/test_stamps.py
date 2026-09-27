@@ -6,8 +6,14 @@ import pikepdf
 import pytest
 from PIL import Image
 
-from dravenpdf import PdfDocument, PdfOperationError
-from dravenpdf.document.stamp import parse_color
+from dravenpdf import (
+    HeaderFooter,
+    LimitExceededError,
+    PdfDocument,
+    PdfOperationError,
+    RenderOptions,
+)
+from dravenpdf.document.stamp import pages_by_size, parse_color
 
 
 def blank(*sizes: tuple[float, float]) -> PdfDocument:
@@ -245,3 +251,51 @@ def test_overlay_outlives_its_source() -> None:
 def test_overlay_bad_stamp_page() -> None:
     with pytest.raises(PdfOperationError, match="no page index 3"):
         blank((100, 100)).overlay(blank((100, 100)), stamp_page=3)
+
+
+class _Renderer:
+    def __init__(self) -> None:
+        self.options: list[RenderOptions | None] = []
+
+    async def from_html(
+        self, html: str, options: RenderOptions | None = None, *, base_url: str | None = None
+    ) -> PdfDocument:
+        self.options.append(options)
+        return blank((100, 100))
+
+
+def test_pages_by_size_groups_displayed_sizes() -> None:
+    doc = blank((200, 300), (200.001, 300), (300, 200)).rotate(90, pages=[2])
+
+    assert pages_by_size(doc._pdf, None) == {(200.0, 300.0): [0, 1, 2]}
+
+
+async def test_stamp_html_keeps_render_options_but_sets_the_page_layout() -> None:
+    renderer = _Renderer()
+    base = RenderOptions(
+        timeout_ms=5_000, paper="Letter", landscape=True, scale=0.5, page_ranges="2",
+        header=HeaderFooter(html="<span>x</span>"), outline=True, print_background=False,
+    )  # fmt: skip
+
+    await blank((144, 72)).stamp_html(renderer, "<p>x</p>", options=base)
+
+    (used,) = renderer.options
+    assert used is not None
+    assert used.timeout_ms == 5_000
+    assert (used.width, used.height) == ("2.0000in", "1.0000in")
+    pdf = used.to_pdf_kwargs()
+    assert pdf["landscape"] is False
+    assert pdf["scale"] == 1.0
+    assert pdf["print_background"] is True
+    assert pdf["margin"] == {"top": "0", "right": "0", "bottom": "0", "left": "0"}
+    assert {"page_ranges", "display_header_footer", "outline", "tagged", "format"}.isdisjoint(pdf)
+
+
+async def test_stamp_html_max_sizes() -> None:
+    renderer = _Renderer()
+
+    with pytest.raises(LimitExceededError, match="3 different sizes"):
+        await blank((100, 100), (110, 100), (120, 100)).stamp_html(
+            renderer, "<p>x</p>", max_sizes=2
+        )
+    assert renderer.options == []

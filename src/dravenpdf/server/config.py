@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     # Output limits: a small upload can ask for a lot of work.
     max_output_mb: float = Field(default=100, gt=0)
     max_image_megapixels: float = Field(default=40, gt=0)
+    # A stamp with html renders once per distinct page size.
+    max_html_stamp_sizes: int = Field(default=10, ge=1)
     # Comma-separated; empty/unset means "any public host".
     allowed_hosts: str = ""
     log_level: str = "INFO"

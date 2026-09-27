@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -48,6 +47,9 @@ from pydantic import (
     model_validator,
 )
 
+# Re-exported: callers and tests import these from dravenpdf.render.auth.
+from dravenpdf.render._netpolicy import canonical_origin as canonical_origin
+from dravenpdf.render._netpolicy import origin_of as origin_of
 from dravenpdf.render.assets import ORIGIN as BUNDLE_ORIGIN
 
 MAX_COOKIES = 200
@@ -60,7 +62,6 @@ MAX_TOTAL_BYTES = 1024 * 1024  # all secret values together
 
 _TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")  # RFC 9110 header / cookie name
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 # Headers the guard must not set: they describe the connection or body, or would
 # bypass the browser's cookie rules (use cookies / storage_state instead).
@@ -70,45 +71,6 @@ FORBIDDEN_HEADERS = frozenset(
         "upgrade", "te", "trailer", "expect", "proxy-connection", "cookie", "cookie2",
     }
 )  # fmt: skip
-
-
-def canonical_origin(value: str) -> str:
-    """``scheme://host[:port]`` with a lowercase host and the default port dropped.
-
-    Raises ValueError for anything that isn't a bare http(s) origin.
-    """
-    parts = urlsplit(value.strip())
-    scheme = parts.scheme.lower()
-    if scheme not in _DEFAULT_PORTS:
-        raise ValueError("origin must start with http:// or https://")
-    if parts.username or parts.password:
-        raise ValueError("origin must not contain a user name or password")
-    if parts.path not in ("", "/") or parts.query or parts.fragment:
-        raise ValueError("origin must be scheme://host[:port], without a path or query")
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise ValueError("origin has no host")
-    try:
-        port = parts.port
-    except ValueError:
-        raise ValueError("origin has an invalid port") from None
-    if ":" in host:
-        host = f"[{host}]"
-    if port is None or port == _DEFAULT_PORTS[scheme]:
-        return f"{scheme}://{host}"
-    return f"{scheme}://{host}:{port}"
-
-
-def origin_of(url: str) -> str | None:
-    """The canonical origin of an http(s) URL, or None for other URLs."""
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    if scheme not in _DEFAULT_PORTS or not parts.hostname:
-        return None
-    try:
-        return canonical_origin(f"{scheme}://{parts.netloc.rsplit('@', 1)[-1]}")
-    except ValueError:
-        return None
 
 
 def _check_secret(value: SecretStr, *, limit: int, what: str) -> SecretStr:

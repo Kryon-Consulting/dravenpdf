@@ -94,6 +94,21 @@ def target_pages(pdf: pikepdf.Pdf, pages: Iterable[int] | None) -> list[int]:
     return sorted(set(normalize_indices(pages, count)))
 
 
+def _size_key(geometry: _Geometry) -> tuple[float, float]:
+    """Pages whose displayed sizes round to the same key share one stamp form."""
+    return round(geometry.width, 2), round(geometry.height, 2)
+
+
+def pages_by_size(
+    pdf: pikepdf.Pdf, pages: Iterable[int] | None
+) -> dict[tuple[float, float], list[int]]:
+    """Target pages (0-based, default all) grouped by displayed size in points."""
+    groups: dict[tuple[float, float], list[int]] = {}
+    for index in target_pages(pdf, pages):
+        groups.setdefault(_size_key(_geometry(pdf.pages[index])), []).append(index)
+    return groups
+
+
 # ---------------------------------------------------------------- placement
 
 
@@ -101,13 +116,14 @@ def _place(
     pdf: pikepdf.Pdf,
     index: int,
     form: pikepdf.Object,
+    geometry: _Geometry,
     *,
     opacity: float,
     under: bool,
 ) -> None:
-    """Draw ``form`` (already in ``pdf``, in displayed coordinates) on page ``index``."""
+    """Draw ``form`` (already in ``pdf``, in displayed coordinates) on page ``index``,
+    whose geometry is ``geometry``."""
     page = pdf.pages[index]
-    geometry = _geometry(page)
     name = page.add_resource(form, pikepdf.Name.XObject, prefix="DpStamp")
     ops = f"q {_matrix(geometry.matrix)} cm "
     if opacity < 1:
@@ -143,10 +159,10 @@ def _stamp_each(
     forms: dict[tuple[float, float], pikepdf.Object] = {}
     for index in target_pages(pdf, pages):
         geometry = _geometry(pdf.pages[index])
-        size = (round(geometry.width, 2), round(geometry.height, 2))
+        size = _size_key(geometry)
         if size not in forms:
             forms[size] = make_form(geometry.width, geometry.height)
-        _place(pdf, index, forms[size], opacity=opacity, under=under)
+        _place(pdf, index, forms[size], geometry, opacity=opacity, under=under)
 
 
 def _form(

@@ -1,11 +1,11 @@
-"""Shared render network policy and Chromium's local-file guard.
+"""Chromium's local-file guard and the render's network policy snapshot.
 
 Every network request is checked by the per-render mitmproxy addon before reaching
-its destination. This module freezes a policy snapshot for that process and keeps
-Playwright's local-file root restriction, which HTTP proxies cannot enforce.
-Chromium redirect chains are observed for reporting. A dedicated browser CDP
-interceptor enforces the per-chain redirect cap while the proxy independently
-checks every network destination.
+its destination (the policy itself is in ``_netpolicy``). This module freezes a
+policy snapshot for that process and keeps Playwright's local-file root restriction,
+which HTTP proxies cannot enforce. Chromium redirect chains are observed for block
+messages; a dedicated browser CDP interceptor (``_redirect_gate``) enforces the
+per-chain redirect cap while the proxy independently checks every network destination.
 
 The DNS check and the upstream connection resolve separately; deployments rendering
 untrusted content should also restrict outbound network traffic.
@@ -14,50 +14,29 @@ untrusted content should also restrict outbound network traffic.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
-import socket
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from playwright.async_api import BrowserContext, Page, Route, WebSocket
+from playwright.async_api import BrowserContext, Page, Request, Route, WebSocket
 
 from dravenpdf.errors import BlockedRequestError
-from dravenpdf.render.auth import origin_of
+from dravenpdf.render._netpolicy import NetworkPolicy as NetworkPolicy
+from dravenpdf.render._netpolicy import Resolver as Resolver
+from dravenpdf.render._netpolicy import _raise_if, origin_of
+from dravenpdf.render._netpolicy import resolve_host as resolve_host
+from dravenpdf.render._proxy_protocol import ProxyPolicy
 
 if TYPE_CHECKING:
-    from dravenpdf.render._proxy_protocol import ProxyPolicy
     from dravenpdf.render.assets import AssetBundle
     from dravenpdf.render.auth import RenderAuth
 
 logger = logging.getLogger("dravenpdf.render.guards")
 
-Resolver = Callable[[str], Awaitable[list[str]]]
 BlockPolicy = Literal["fail", "skip"]
-
-MAX_REDIRECTS = 10
-_ALWAYS_ALLOWED_SCHEMES = frozenset({"data", "blob", "about"})
-_WEBSOCKET_SCHEMES = {"ws": "http", "wss": "https"}
-
-
-async def resolve_host(host: str) -> list[str]:
-    """Resolve ``host`` to its IP addresses using the system resolver."""
-    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    return sorted({str(info[4][0]) for info in infos})
-
-
-def _is_public(address: str) -> bool:
-    ip = ipaddress.ip_address(address.split("%", 1)[0])  # drop IPv6 zone ids
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip.is_global and not ip.is_multicast
-
-
-def _normalize_host(host: str) -> str:
-    return host.strip().lower().rstrip(".")
 
 
 def _host_port(url: str) -> str | None:
@@ -67,77 +46,6 @@ def _host_port(url: str) -> str | None:
         return None
     port = parts.port or (443 if parts.scheme in ("https", "wss") else 80)
     return f"{parts.hostname}:{port}"
-
-
-def _raise_if(url: str, reason: str | None) -> None:
-    if reason is not None:
-        raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
-
-
-class NetworkPolicy:
-    """The shared DNS and allowlist decision used by browser and proxy guards."""
-
-    def __init__(
-        self,
-        *,
-        allowed_hosts: Iterable[str] | None,
-        allow_private_network: bool,
-        bundle: AssetBundle | None,
-        resolver: Resolver = resolve_host,
-    ) -> None:
-        self.exact: set[str] = set()
-        self.suffixes: list[str] = []
-        self.has_allowlist = allowed_hosts is not None
-        for entry in allowed_hosts or ():
-            host = _normalize_host(entry)
-            if host.startswith("*."):
-                self.suffixes.append(host[1:])
-            elif host:
-                self.exact.add(host)
-        self.allow_private = allow_private_network
-        self.bundle = bundle
-        self.resolver = resolver
-        self.dns_cache: dict[str, list[str]] = {}
-
-    async def reason(self, url: str) -> str | None:
-        parts = urlsplit(url)
-        scheme = _WEBSOCKET_SCHEMES.get(parts.scheme.lower(), parts.scheme.lower())
-        if scheme in _ALWAYS_ALLOWED_SCHEMES:
-            return None
-        if scheme not in ("http", "https"):
-            return f"scheme {scheme or '(none)'!r} is not allowed"
-        host = _normalize_host(parts.hostname or "")
-        if self.bundle is not None and self.bundle.owns(url):
-            return None
-        if not host:
-            return "URL has no host"
-        if self.has_allowlist:
-            allowed = host in self.exact or any(host.endswith(s) for s in self.suffixes)
-            return None if allowed else "host is not on the allowlist"
-        if self.allow_private:
-            return None
-        try:
-            addresses = await self.resolve(host)
-        except (PermissionError, TimeoutError):
-            raise
-        except OSError as exc:
-            return f"could not resolve host ({exc})"
-        private = [address for address in addresses if not _is_public(address)]
-        if private or not addresses:
-            return f"host resolves to a non-public address ({', '.join(private) or 'none'})"
-        return None
-
-    async def check(self, url: str) -> None:
-        _raise_if(url, await self.reason(url))
-
-    async def resolve(self, host: str) -> list[str]:
-        try:
-            return [str(ipaddress.ip_address(host.strip("[]")))]
-        except ValueError:
-            pass
-        if host not in self.dns_cache:
-            self.dns_cache[host] = await self.resolver(host)
-        return self.dns_cache[host]
 
 
 class RequestGuard:
@@ -181,8 +89,6 @@ class RequestGuard:
 
     def proxy_policy(self, credential: str, deadline: float | None) -> ProxyPolicy:
         """Freeze the network policy and response data for one proxy process."""
-        from dravenpdf.render._proxy_protocol import ProxyPolicy
-
         allowed = None
         if self.network.has_allowlist:
             allowed = sorted(self.network.exact) + [
@@ -262,11 +168,9 @@ class RequestGuard:
                 return
         await route.continue_()
 
-    def _observe_request(self, request: object) -> None:
-        """Record chains past the public ten-redirect limit."""
-        from playwright.async_api import Request
-
-        assert isinstance(request, Request)
+    def _observe_request(self, request: Request) -> None:
+        """Remember where each origin's requests came from, for block messages.
+        The redirect cap itself is enforced by RedirectGate."""
         parent = request.redirected_from
         origin = origin_of(request.url)
         if origin is not None:
@@ -275,12 +179,6 @@ class RequestGuard:
                 self._observed_urls[target] = request.url
         if parent is not None and origin is not None:
             self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
-        hops = 0
-        while parent is not None:
-            hops += 1
-            parent = parent.redirected_from
-        if hops > MAX_REDIRECTS:
-            self._block(request.url, f"more than {MAX_REDIRECTS} redirects")
 
     def add_proxy_blocks(self, events: list[tuple[str, str]]) -> None:
         for target, reason in events:

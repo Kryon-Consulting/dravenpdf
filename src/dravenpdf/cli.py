@@ -22,7 +22,13 @@ from dravenpdf.document.pages import optional_page_ranges, parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
-from dravenpdf.errors import BlockedRequestError, DravenPdfError, PdfPasswordError
+from dravenpdf.errors import (
+    BlockedRequestError,
+    DravenPdfError,
+    PdfOperationError,
+    PdfPasswordError,
+    describe_validation_errors,
+)
 from dravenpdf.options import (
     ColorScheme,
     HeaderFooter,
@@ -84,15 +90,18 @@ def _load_auth(path: Path | None) -> RenderAuth | None:
             return RenderAuth(storage_state=StorageState.model_validate(raw))
         return RenderAuth.model_validate(raw)
     except ValidationError as exc:
-        problems = "; ".join(
-            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
-            for e in exc.errors(include_input=False)
-        )
+        problems = describe_validation_errors(exc.errors(include_input=False))
         _fail(f"--auth {path}: {problems}")
 
 
-def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
-    return optional_page_ranges(spec, doc.page_count)
+def _read_json_object(path: Path, flag: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _fail(f"{flag} {path}: not valid JSON")
+    if not isinstance(value, dict):
+        _fail(f"{flag} must contain a JSON object")
+    return value
 
 
 def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> None:
@@ -129,6 +138,8 @@ def main() -> None:
         typer.secho(f"error: {exc.message}", fg=typer.colors.RED, err=True)
         if isinstance(exc, PdfPasswordError) and "needs a password" in exc.message:
             typer.echo("hint: remove the password first with `dravenpdf decrypt`", err=True)
+        if isinstance(exc, PdfOperationError) and "restrict a permission" in exc.message:
+            typer.echo("hint: e.g. --user-password, or --no-copy / --no-print", err=True)
         if isinstance(exc, BlockedRequestError) and "non-public" in exc.message:
             typer.echo("hint: pass --allow-private to render local or internal addresses", err=True)
         sys.exit(1)
@@ -311,9 +322,7 @@ def template(
 ) -> None:
     """Render a Jinja2 template with JSON data. Assets load from the template's folder."""
     render_auth = _load_auth(auth)
-    values = json.loads(data.read_text()) if data is not None else {}
-    if not isinstance(values, dict):
-        _fail("--data must contain a JSON object")
+    values = _read_json_object(data, "--data") if data is not None else {}
     options = _render_options(
         paper, landscape, None, None, footer, "networkidle", None, False, 30, "print"
     )
@@ -376,7 +385,7 @@ def rotate(
 ) -> None:
     """Rotate pages."""
     doc = PdfDocument.open(input)
-    _write_pdf(doc.rotate(degrees, _pages(pages, doc)), output)
+    _write_pdf(doc.rotate(degrees, optional_page_ranges(pages, doc.page_count)), output)
 
 
 @app.command()
@@ -419,30 +428,25 @@ def stamp(
     if len(chosen) != 1:
         _fail("give exactly one of --text, --image, --html or --pdf")
     doc = PdfDocument.open(input)
-    targets = _pages(pages, doc)
+    targets = optional_page_ranges(pages, doc.page_count)
+    # opacity=None: each kind's own default (0.3 for text, else 1).
     if text is not None:
         result = doc.stamp_text(
-            text, font_size=font_size, color=color, opacity=0.3 if opacity is None else opacity,
-            angle=angle, position=position, pages=targets, under=under,
+            text, font_size=font_size, color=color, opacity=opacity, angle=angle,
+            position=position, pages=targets, under=under,
         )  # fmt: skip
     elif image is not None:
         result = doc.stamp_image(
-            image.read_bytes(), width=width, position=position,
-            opacity=1.0 if opacity is None else opacity, pages=targets, under=under,
-        )  # fmt: skip
-    elif pdf is not None:
-        result = doc.overlay(
-            PdfDocument.open(pdf), opacity=1.0 if opacity is None else opacity,
+            image.read_bytes(), width=width, position=position, opacity=opacity,
             pages=targets, under=under,
         )  # fmt: skip
+    elif pdf is not None:
+        result = doc.overlay(PdfDocument.open(pdf), opacity=opacity, pages=targets, under=under)
     else:
         assert html is not None
         markup = html.read_text()
         with Renderer() as renderer:
-            result = renderer.stamp_html(
-                doc, markup, opacity=1.0 if opacity is None else opacity,
-                pages=targets, under=under,
-            )  # fmt: skip
+            result = renderer.stamp_html(doc, markup, opacity=opacity, pages=targets, under=under)
     _write_pdf(result, output)
 
 
@@ -466,7 +470,6 @@ def metadata(
         return
     if output is None:
         _fail("give -o to write the changed copy")
-    assert output is not None
     _write_pdf(doc.set_metadata(**changes), output)
 
 
@@ -488,9 +491,7 @@ def fill_form(
     flatten: Annotated[bool, typer.Option(help="Burn the values in and remove the form.")] = False,
 ) -> None:
     """Fill form fields (text, true/false for checkboxes, option names)."""
-    values = json.loads(data.read_text())
-    if not isinstance(values, dict):
-        _fail("--data must contain a JSON object")
+    values = _read_json_object(data, "--data")
     _write_pdf(PdfDocument.open(input).fill_form(values, flatten=flatten), output)
 
 
@@ -537,6 +538,8 @@ def sign(
             page, x, y, width, height = (float(p) for p in parts)
         except ValueError:
             _fail("--visible must be PAGE,X,Y,WIDTH,HEIGHT, e.g. 1,50,50,200,60")
+        if page < 1 or page != int(page):
+            _fail("--visible PAGE is 1-based: 1 is the first page")
         box = SignatureBox(page=int(page) - 1, x=x, y=y, width=width, height=height)
     signing_key = SigningKey.from_pkcs12(key, key_password or None)
     doc = PdfDocument.open(input).sign(
@@ -610,12 +613,6 @@ def encrypt(
 ) -> None:
     """Encrypt a PDF (AES-256). Prefer the env variables to passing passwords as
     arguments, which other users on the machine can see in the process list."""
-    if (
-        not user_password
-        and owner_password is None
-        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
-    ):
-        _fail("set a password or restrict a permission (e.g. --no-copy)")
     doc = PdfDocument.open(input).encrypt(
         user_password=user_password, owner_password=owner_password,
         allow_print=allow_print, allow_copy=allow_copy, allow_modify=allow_modify,
@@ -665,7 +662,7 @@ def images(
 ) -> None:
     """Render pages to images: page-1.png, page-2.png, ..."""
     doc = PdfDocument.open(input)
-    targets = _pages(pages, doc) or list(range(doc.page_count))
+    targets = optional_page_ranges(pages, doc.page_count) or list(range(doc.page_count))
     output.mkdir(parents=True, exist_ok=True)
     extension = "jpg" if fmt == "jpeg" else "png"
     for index, data in zip(targets, doc.to_images(dpi=dpi, fmt=fmt, pages=targets), strict=True):

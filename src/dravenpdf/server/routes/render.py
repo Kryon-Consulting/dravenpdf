@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
@@ -15,6 +14,7 @@ from dravenpdf.render.auth import RenderAuth
 from dravenpdf.server.deps import (
     PDF_RESPONSE,
     clamp_timeout,
+    json_object_field,
     pdf_response,
     renderer_of,
     require_api_key,
@@ -118,14 +118,7 @@ async def render_bundle(
         assets[path] = content
     if document is None:
         raise ApiError("invalid_request", "send the document as html or a file named index.html")
-    values: dict[str, Any] | None = None
-    if data is not None:
-        try:
-            values = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise ApiError("invalid_request", f"data: not valid JSON ({exc.msg})") from None
-        if not isinstance(values, dict):
-            raise ApiError("invalid_request", "data: must be a JSON object")
+    values = json_object_field(data, "data")
     render_options = clamp_timeout(
         _json_field(RenderOptions, options, "options") or RenderOptions(), settings_of(request)
     )

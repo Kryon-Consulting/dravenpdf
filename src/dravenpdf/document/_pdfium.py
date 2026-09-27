@@ -18,14 +18,32 @@ LOCK = threading.RLock()
 
 
 @contextmanager
-def open_pdf(data: bytes) -> Iterator[pdfium.PdfDocument]:
-    """Open ``data`` with pdfium while holding the lock; closes it afterwards."""
+def open_pdf(data: bytes, *, hold_lock: bool = True) -> Iterator[pdfium.PdfDocument]:
+    """Open ``data`` with pdfium and close it afterwards.
+
+    By default ``LOCK`` is held throughout. With ``hold_lock=False`` only opening and
+    closing take it: the caller must hold ``LOCK`` around every other pdfium call,
+    including closing pages and bitmaps. Use that to do slow work that isn't pdfium
+    (image encoding) without blocking other threads.
+    """
+    if hold_lock:
+        with LOCK:
+            try:
+                pdf = pdfium.PdfDocument(data)
+            except pdfium.PdfiumError as exc:
+                raise InvalidPdfError(f"pdfium could not open the PDF: {exc}") from exc
+            try:
+                yield pdf
+            finally:
+                pdf.close()
+        return
     with LOCK:
         try:
             pdf = pdfium.PdfDocument(data)
         except pdfium.PdfiumError as exc:
             raise InvalidPdfError(f"pdfium could not open the PDF: {exc}") from exc
-        try:
-            yield pdf
-        finally:
+    try:
+        yield pdf
+    finally:
+        with LOCK:
             pdf.close()

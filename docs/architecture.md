@@ -194,8 +194,9 @@ save-and-reopen their result (`pages._detach`) before returning it.
   rotated pages. Opacity is an ExtGState on the placement plus a transparency group
   on the form. Text uses the built-in Helvetica font (cp1252 only). `stamp_html`
   renders the HTML at each distinct page size and overlays it.
-- **`images.py`**: `images_to_pdf` (img2pdf, no re-encoding) and `to_images`
-  (pypdfium2, DPI and format options).
+- **`images.py`**: `images_to_pdf` (img2pdf, no re-encoding) and `pdf_to_images` /
+  `iter_pdf_to_images` (pypdfium2, DPI and format options). Pages are rendered under
+  the pdfium lock and encoded outside it.
 - **`text.py`**: per-page text via pypdfium2.
 - **`forms.py`**: AcroForm listing, filling and flattening with `pikepdf.form`. Values are
   validated before any change; appearances come from QPDF's generator (cp1252 text),

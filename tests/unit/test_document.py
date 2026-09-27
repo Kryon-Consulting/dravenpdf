@@ -287,3 +287,19 @@ def test_iter_split_builds_parts_on_demand(monkeypatch: pytest.MonkeyPatch) -> N
 def test_iter_split_checks_arguments_before_building_anything() -> None:
     with pytest.raises(PdfOperationError, match="past the last page"):
         make_pdf(3).iter_split(ranges=["1", "9"])  # raises at the call, not on next()
+
+
+def test_readable_bytes_are_written_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    derived = make_pdf(2).rotate(90)
+    saves: list[object] = []
+    real_save = pikepdf.Pdf.save
+
+    def counting_save(self: pikepdf.Pdf, *args: object, **kwargs: object) -> None:
+        saves.append(self)
+        real_save(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pikepdf.Pdf, "save", counting_save)
+    derived.extract_text()
+    derived.to_images(dpi=10)
+
+    assert len(saves) == 1

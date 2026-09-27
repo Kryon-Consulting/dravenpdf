@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import zipfile
 from collections.abc import Awaitable, Iterable, Iterator
@@ -12,9 +13,8 @@ from typing import Annotated, Any
 from fastapi import Header, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from dravenpdf.document.pages import optional_page_ranges
 from dravenpdf.document.pdf import PdfDocument
-from dravenpdf.errors import LimitExceededError
+from dravenpdf.errors import LimitExceededError, RenderTimeoutError
 from dravenpdf.options import RenderOptions
 from dravenpdf.render.renderer import AsyncRenderer
 from dravenpdf.server.config import Settings
@@ -74,6 +74,17 @@ async def timed[T](request: Request, source: str, work: Awaitable[T]) -> T:
         return await work
 
 
+async def within_deadline[T](timeout_ms: int, work: Awaitable[T]) -> T:
+    """``work``, bounded as a whole by the server's render timeout."""
+    try:
+        async with asyncio.timeout(timeout_ms / 1000):
+            return await work
+    except TimeoutError:
+        raise RenderTimeoutError(
+            f"render did not finish within {timeout_ms} ms", timeout_ms=timeout_ms
+        ) from None
+
+
 async def read_pdf(upload: UploadFile, password: str | None = None) -> PdfDocument:
     data = await upload.read()
     if b"%PDF-" not in data[:1024]:
@@ -81,9 +92,20 @@ async def read_pdf(upload: UploadFile, password: str | None = None) -> PdfDocume
     return await asyncio.to_thread(PdfDocument.from_bytes, data, password=password)
 
 
-def pages_arg(spec: str | None, doc: PdfDocument) -> list[int] | None:
-    """1-based page string from a form field, as 0-based indices (None = all)."""
-    return optional_page_ranges(spec, doc.page_count)
+def json_object_field(
+    raw: str | None, field: str, what: str = "a JSON object"
+) -> dict[str, Any] | None:
+    """A form field holding a JSON object, or None when absent. ``what`` describes the
+    expected value in the error for anything else."""
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ApiError("invalid_request", f"{field}: not valid JSON ({exc.msg})") from None
+    if not isinstance(value, dict):
+        raise ApiError("invalid_request", f"{field}: must be {what}")
+    return value
 
 
 def _apply_post(doc: PdfDocument, post: PostProcess | None) -> bytes:
@@ -116,8 +138,9 @@ async def zip_response(
     """A ZIP of ``files``, built in a worker thread and streamed from a spooled file.
 
     ``files`` is consumed in the worker thread, so it may be a generator that does
-    the work lazily. Past ``max_bytes`` of (uncompressed) content it raises
-    :class:`LimitExceededError`. Pass ``compress=False`` for already-compressed data.
+    the work lazily; it is closed there too if building the ZIP fails. Past
+    ``max_bytes`` of (uncompressed) content it raises :class:`LimitExceededError`.
+    Pass ``compress=False`` for already-compressed data.
     """
     spool = await asyncio.to_thread(_write_zip, files, max_bytes, compress)
     size = spool.tell()
@@ -153,6 +176,11 @@ def _write_zip(
                 del data  # written; don't hold it while the next file is produced
     except BaseException:
         spool.close()
+        # Close a half-consumed generator here, in the worker thread. Left to the
+        # traceback, it would be finalized later on the event loop, where releasing
+        # what it holds (a pdfium document takes the pdfium lock) could block.
+        if (close := getattr(files, "close", None)) is not None:
+            close()
         raise
     return spool
 

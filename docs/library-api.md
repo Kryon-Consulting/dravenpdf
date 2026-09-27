@@ -244,6 +244,7 @@ signed = doc.sign(
     timestamp_url="https://tsa.example/",                          # optional RFC 3161
 )
 signed.save("signed.pdf")
+# A box off the page range, with negative x/y or a non-positive size: PdfOperationError.
 
 signatures = PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes])
 for sig in signatures:
@@ -310,6 +311,8 @@ protected.decrypt()                   # a copy written without encryption
 - `merge` takes pending encryption from the first document, like metadata.
 - The `allow_*` permissions are honoured by well-behaved viewers only; anyone who can
   open the file can technically copy or print it. Use a user password to protect content.
+- `encrypt()` with no password and every permission allowed protects nothing, so it
+  raises `PdfOperationError` ("set a password or restrict a permission").
 - A missing or wrong password raises `PdfPasswordError` (a subclass of
   `InvalidPdfError`); passwords never appear in error messages.
 
@@ -321,6 +324,7 @@ doc.stamp_text("CONFIDENTIAL", font_size=48, color="#FF0000", opacity=0.3, angle
 doc.stamp_image(logo_png, width=120, position="top-right", margin=36, opacity=1.0)
 doc.overlay(letterhead_pdf, stamp_page=0, under=True)      # page of another PDF, fit + centered
 await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
+await doc.stamp_html(renderer, html, options=RenderOptions(timeout_ms=10_000), max_sizes=10)
 ```
 
 - `position`: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
@@ -331,8 +335,13 @@ await doc.stamp_html(renderer, "<div class='draft'>DRAFT</div>", opacity=0.5)
 - `stamp_image` accepts PNG, JPEG, GIF, WebP, ... and keeps transparency. Its default
   size is the image's pixel size at 96 dpi, and it always shrinks to fit inside the margins.
 - `stamp_html` renders the HTML once per distinct page size, at that size and with no
-  margins. The HTML page is transparent except for what it draws.
+  margins. The HTML page is transparent except for what it draws. `options` sets how
+  each render loads and waits (timeout, waits, viewport, locale, ...); its page layout
+  (paper, size, margins, orientation, scale, header/footer, page ranges, outline) is
+  always the target page's. `max_sizes` raises `LimitExceededError` before rendering
+  when the pages have more distinct sizes than that.
 - `opacity` applies to the stamp as a whole; `under=True` draws it behind the page content.
+  Its default (also for `opacity=None`) is 0.3 for `stamp_text` and 1.0 for the others.
 
 ### Images and text
 
@@ -341,8 +350,14 @@ PdfDocument.from_images([png, jpg])                     # page = image size (96 
 PdfDocument.from_images([png, jpg], paper="A4", landscape=False, margin=36)  # fit on paper
 doc.to_images(dpi=150, fmt="png", pages=None)           # list[bytes]; fmt "png" | "jpeg"
 doc.to_images(dpi=300, max_pixels=40_000_000, max_total_bytes=100 * 2**20)  # LimitExceededError past either
+doc.iter_images(dpi=150)                                # same options; one page rendered per next()
 doc.extract_text()                                      # list[str], one per page; no OCR
 ```
+
+`iter_images` holds one image at a time. It checks its options at once and does the
+rest as it is consumed, so from async code consume it in a worker thread, and close it
+(`contextlib.closing`) there if you stop early. Pages are encoded outside the global
+pdfium lock, so other threads can use pdfium meanwhile.
 
 ## HTML with its assets, from memory
 
