@@ -727,6 +727,16 @@ def test_encrypt_needs_a_password_or_restriction(client: TestClient) -> None:
     response = client.post("/v1/pdf/encrypt", files={"file": upload(pdf_bytes())}, headers=AUTH)
 
     assert response.status_code == 400
+    assert "set a password or restrict a permission" in response.json()["error"]["message"]
+
+
+def test_encrypt_empty_owner_password_means_random(client: TestClient) -> None:
+    response = client.post(
+        "/v1/pdf/encrypt", files={"file": upload(pdf_bytes())},
+        data={"owner_password": "", "allow_copy": "false"}, headers=AUTH,
+    )  # fmt: skip
+
+    assert response.status_code == 200, response.text
 
 
 # ---------------------------------------------------------------- forms

@@ -90,6 +90,24 @@ _STAMP_LAYOUT: dict[str, object] = {
 }
 
 
+def _opacity(opacity: float | None, default: float = 1.0) -> float:
+    """``opacity``, or the stamp kind's default when it is None (unset)."""
+    return default if opacity is None else opacity
+
+
+def _check_box(box: SignatureBox, page_count: int) -> None:
+    if box.page < 0:
+        raise PdfOperationError("signature page must not be negative (pages are 0-based)")
+    if box.page >= page_count:
+        raise PdfOperationError(
+            f"signature page {box.page + 1} is past the last page ({page_count})"
+        )
+    if box.x < 0 or box.y < 0:
+        raise PdfOperationError("signature box x and y must not be negative")
+    if box.width <= 0 or box.height <= 0:
+        raise PdfOperationError("signature box width and height must be positive")
+
+
 class PdfDocument:
     """A PDF held in memory, backed by :class:`pikepdf.Pdf`.
 
@@ -293,7 +311,7 @@ class PdfDocument:
         *,
         font_size: float = 48,
         color: str = "#FF0000",
-        opacity: float = 0.3,
+        opacity: float | None = None,
         angle: float = 45,
         position: Position = "center",
         margin: float = 36,
@@ -304,11 +322,12 @@ class PdfDocument:
 
         Western European (cp1252) characters only; use :meth:`stamp_html` for other
         scripts or richer styling. ``margin`` (points) applies to non-center positions.
+        ``opacity`` defaults to 0.3 (as for every stamp, ``None`` means the default).
         """
         result = self._writable_copy()
         stamp_ops.stamp_text(
-            result, text, font_size=font_size, color=color, opacity=opacity, angle=angle,
-            position=position, margin=margin, pages=pages, under=under,
+            result, text, font_size=font_size, color=color, opacity=_opacity(opacity, 0.3),
+            angle=angle, position=position, margin=margin, pages=pages, under=under,
         )  # fmt: skip
         return self._derive(result)
 
@@ -319,7 +338,7 @@ class PdfDocument:
         width: float | None = None,
         position: Position = "center",
         margin: float = 36,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
     ) -> PdfDocument:
@@ -328,7 +347,7 @@ class PdfDocument:
         result = self._writable_copy()
         stamp_ops.stamp_image(
             result, image, width=width, position=position, margin=margin,
-            opacity=opacity, pages=pages, under=under,
+            opacity=_opacity(opacity), pages=pages, under=under,
         )  # fmt: skip
         return self._derive(result)
 
@@ -337,15 +356,15 @@ class PdfDocument:
         stamp: PdfDocument | bytes,
         *,
         stamp_page: int = 0,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
     ) -> PdfDocument:
         """Draw a page of another PDF (letterhead, form background, ...) on each page,
         scaled to fit and centered. ``under=True`` puts it behind the content."""
         return self._overlay_all(
-            [(_as_pdf(stamp), pages)], stamp_page=stamp_page, opacity=opacity, under=under,
-            stacklevel=4,
+            [(_as_pdf(stamp), pages)], stamp_page=stamp_page, opacity=_opacity(opacity),
+            under=under, stacklevel=4,
         )  # fmt: skip
 
     def _overlay_all(
@@ -370,7 +389,7 @@ class PdfDocument:
         renderer: HtmlRenderer,
         html: str,
         *,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
         base_url: str | None = None,
@@ -409,7 +428,9 @@ class PdfDocument:
             stamps.append((stamp._pdf, indices))
         # Overlaying is CPU-bound pikepdf work; keep it off the event loop. All sizes go
         # onto one copy, so the document is rewritten once however many sizes it has.
-        return await asyncio.to_thread(self._overlay_all, stamps, opacity=opacity, under=under)
+        return await asyncio.to_thread(
+            self._overlay_all, stamps, opacity=_opacity(opacity), under=under
+        )
 
     # ------------------------------------------------------------------ images and text
 
@@ -531,6 +552,8 @@ class PdfDocument:
                 "can't sign a document with pending encryption: encrypting after signing "
                 "would rewrite the file; sign an unencrypted document"
             )
+        if box is not None:
+            _check_box(box, self.page_count)
         signed = sign_ops.sign(
             self.to_bytes(), key, field_name=field_name, reason=reason, location=location,
             contact=contact, box=box, timestamp_url=timestamp_url,
@@ -571,9 +594,17 @@ class PdfDocument:
         the restrictions can't be lifted with a password. The ``allow_*`` flags are
         honoured by well-behaved viewers only: anyone who can open the file can
         technically copy or print it. Use a user password to actually protect content.
-        Operations on the result keep its encryption.
+        Operations on the result keep its encryption. With no password and no
+        restriction there is nothing to protect, so that raises
+        :class:`PdfOperationError`.
         """
         user = reveal(user_password)
+        if (
+            not user
+            and owner_password is None
+            and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
+        ):
+            raise PdfOperationError("set a password or restrict a permission")
         owner = reveal(owner_password) if owner_password is not None else secrets.token_urlsafe(32)
         if not owner:
             raise PdfOperationError("owner_password must not be empty")

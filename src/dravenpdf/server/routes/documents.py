@@ -147,23 +147,22 @@ async def stamp(
         raise ApiError("invalid_request", "send exactly one of text, image or html")
     doc = await read_pdf(file)
     targets = pages_arg(pages, doc)
+    # opacity=None: each kind's own default (0.3 for text, else 1).
     if text is not None:
         result = await asyncio.to_thread(
-            doc.stamp_text, text, font_size=font_size, color=color,
-            opacity=0.3 if opacity is None else opacity, angle=angle,
-            position=position, margin=margin, pages=targets, under=under,
+            doc.stamp_text, text, font_size=font_size, color=color, opacity=opacity,
+            angle=angle, position=position, margin=margin, pages=targets, under=under,
         )  # fmt: skip
     elif image is not None:
         result = await asyncio.to_thread(
             doc.stamp_image, await image.read(), width=width, position=position, margin=margin,
-            opacity=1.0 if opacity is None else opacity, pages=targets, under=under,
+            opacity=opacity, pages=targets, under=under,
         )  # fmt: skip
     else:
         assert html is not None
         settings = settings_of(request)
         work = doc.stamp_html(
-            renderer_of(request), html, opacity=1.0 if opacity is None else opacity,
-            pages=targets, under=under,
+            renderer_of(request), html, opacity=opacity, pages=targets, under=under,
             options=RenderOptions(timeout_ms=settings.render_timeout_ms),
             max_sizes=settings.max_html_stamp_sizes,
         )  # fmt: skip
@@ -211,12 +210,6 @@ async def encrypt(
     allow_forms: Annotated[bool, Form()] = True,
 ) -> Response:
     """Encrypt with AES-256. The allow_* flags are advisory (honoured by viewers)."""
-    if (
-        not user_password
-        and not owner_password
-        and all((allow_print, allow_copy, allow_modify, allow_annotate, allow_forms))
-    ):
-        raise ApiError("invalid_request", "set a password or restrict a permission")
     doc = await read_pdf(file, password)
     result = await asyncio.to_thread(
         doc.encrypt,
@@ -329,8 +322,6 @@ async def sign(
     doc = await read_pdf(file, password)
     box = None
     if page is not None and x is not None and y is not None and width and height:
-        if page > doc.page_count:
-            raise ApiError("invalid_request", f"page {page} is past the last page")
         box = SignatureBox(page=page - 1, x=x, y=y, width=width, height=height)
     signed = await asyncio.to_thread(
         doc.sign, keys[key], field_name=field_name, reason=reason, location=location,

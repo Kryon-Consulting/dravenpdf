@@ -244,6 +244,7 @@ signed = doc.sign(
     timestamp_url="https://tsa.example/",                          # optional RFC 3161
 )
 signed.save("signed.pdf")
+# A box off the page range, with negative x/y or a non-positive size: PdfOperationError.
 
 signatures = PdfDocument.open("signed.pdf").verify_signatures([ca_pem_bytes])
 for sig in signatures:
@@ -310,6 +311,8 @@ protected.decrypt()                   # a copy written without encryption
 - `merge` takes pending encryption from the first document, like metadata.
 - The `allow_*` permissions are honoured by well-behaved viewers only; anyone who can
   open the file can technically copy or print it. Use a user password to protect content.
+- `encrypt()` with no password and every permission allowed protects nothing, so it
+  raises `PdfOperationError` ("set a password or restrict a permission").
 - A missing or wrong password raises `PdfPasswordError` (a subclass of
   `InvalidPdfError`); passwords never appear in error messages.
 
@@ -338,6 +341,7 @@ await doc.stamp_html(renderer, html, options=RenderOptions(timeout_ms=10_000), m
   always the target page's. `max_sizes` raises `LimitExceededError` before rendering
   when the pages have more distinct sizes than that.
 - `opacity` applies to the stamp as a whole; `under=True` draws it behind the page content.
+  Its default (also for `opacity=None`) is 0.3 for `stamp_text` and 1.0 for the others.
 
 ### Images and text
 

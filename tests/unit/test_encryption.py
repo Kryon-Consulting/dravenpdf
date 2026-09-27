@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from pathlib import Path
 
 import pikepdf
@@ -133,16 +135,20 @@ def test_cli_encrypt_and_decrypt(tmp_path: Path) -> None:
 def test_cli_encrypt_needs_something_to_do(tmp_path: Path) -> None:
     sample().save(tmp_path / "in.pdf")
 
-    result = runner.invoke(app, ["encrypt", str(tmp_path / "in.pdf"), "-o", "x.pdf"])
+    # The rule is the library's, so run main(), which turns it into a message.
+    completed = subprocess.run(
+        [sys.executable, "-m", "dravenpdf", "encrypt", str(tmp_path / "in.pdf"),
+         "-o", str(tmp_path / "x.pdf")],
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
 
-    assert result.exit_code == 1
-    assert "set a password" in result.output
+    assert completed.returncode == 1
+    assert "error: set a password or restrict a permission" in completed.stderr
+    assert "--no-copy" in completed.stderr
+    assert not (tmp_path / "x.pdf").exists()
 
 
 def test_cli_hint_for_encrypted_input(tmp_path: Path) -> None:
-    import subprocess
-    import sys
-
     (tmp_path / "enc.pdf").write_bytes(sample().encrypt(user_password=SECRET).to_bytes())
 
     completed = subprocess.run(
@@ -153,3 +159,10 @@ def test_cli_hint_for_encrypted_input(tmp_path: Path) -> None:
     assert completed.returncode == 1
     assert "needs a password" in completed.stderr
     assert "dravenpdf decrypt" in completed.stderr
+
+
+def test_encrypt_needs_a_password_or_a_restriction() -> None:
+    with pytest.raises(PdfOperationError, match="set a password or restrict a permission"):
+        sample().encrypt()
+    assert sample().encrypt(allow_copy=False).is_encrypted
+    assert sample().encrypt(owner_password="owner").is_encrypted

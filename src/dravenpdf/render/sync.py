@@ -147,7 +147,7 @@ class Renderer:
         document: PdfDocument,
         html: str,
         *,
-        opacity: float = 1.0,
+        opacity: float | None = None,
         pages: Iterable[int] | None = None,
         under: bool = False,
         base_url: str | None = None,
