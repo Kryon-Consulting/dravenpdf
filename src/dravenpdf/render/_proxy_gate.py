@@ -30,6 +30,59 @@ def _free_loopback_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _prepare_directory(
+    ca: ProxyCA, policy: bytes, port: int, upstream_ca: Path | None
+) -> TemporaryDirectory[str]:
+    """A private confdir for one mitmdump attempt: CA, policy and config, all 0600."""
+    directory = TemporaryDirectory(prefix="dravenpdf-proxy-")
+    try:
+        path = Path(directory.name)
+        shutil.copyfile(ca.confdir / "mitmproxy-ca.pem", path / "mitmproxy-ca.pem")
+        os.chmod(path / "mitmproxy-ca.pem", 0o600)
+        ProxyPolicy.write_json(path / "policy.json", policy)
+        # mitmproxy loads this file from confdir. A secret never appears in argv.
+        config: dict[str, object] = {
+            "mode": [f"regular@127.0.0.1:{port}"],
+            "connection_strategy": "lazy",
+            "upstream_cert": False,
+            "ssl_insecure": False,
+            "ignore_hosts": [],
+            "flow_detail": 0,
+            "termlog_verbosity": "error",
+        }
+        if upstream_ca is not None:
+            trusted = path / "trusted-upstream-ca.pem"
+            shutil.copyfile(upstream_ca, trusted)
+            os.chmod(trusted, 0o600)
+            config["ssl_verify_upstream_trusted_ca"] = str(trusted)
+        (path / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        os.chmod(path / "config.yaml", 0o600)
+    except BaseException:
+        directory.cleanup()
+        raise
+    return directory
+
+
+async def _prepared_directory(
+    ca: ProxyCA, policy: bytes, port: int, upstream_ca: Path | None
+) -> TemporaryDirectory[str]:
+    """:func:`_prepare_directory` in a worker thread. If the caller is cancelled first,
+    the directory is removed once the thread finishes, so no private files are left."""
+    task = asyncio.ensure_future(
+        asyncio.to_thread(_prepare_directory, ca, policy, port, upstream_ca)
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_cleanup_prepared)
+        raise
+
+
+def _cleanup_prepared(task: asyncio.Future[TemporaryDirectory[str]]) -> None:
+    if not task.cancelled() and task.exception() is None:
+        task.result().cleanup()
+
+
 class ProxyGate:
     def __init__(
         self,
@@ -69,36 +122,19 @@ class ProxyGate:
     ) -> ProxyGate:
         """Start a ready loopback proxy or fail before a context can be made."""
         loop = asyncio.get_running_loop()
+        # The policy can hold a large asset bundle: serialize it once, off the loop.
+        payload = await asyncio.to_thread(policy.to_json)
         for _ in range(_START_ATTEMPTS):
             if loop.time() >= deadline:
                 raise TimeoutError("proxy startup deadline")
-            directory = TemporaryDirectory(prefix="dravenpdf-proxy-")
+            directory: TemporaryDirectory[str] | None = None
             read_fd = write_fd = -1
             gate: ProxyGate | None = None
             process: asyncio.subprocess.Process | None = None
             try:
-                path = Path(directory.name)
-                shutil.copyfile(ca.confdir / "mitmproxy-ca.pem", path / "mitmproxy-ca.pem")
-                os.chmod(path / "mitmproxy-ca.pem", 0o600)
-                policy.write(path / "policy.json")
                 port = _free_loopback_port()
-                # mitmproxy loads this file from confdir. A secret never appears in argv.
-                config = {
-                    "mode": [f"regular@127.0.0.1:{port}"],
-                    "connection_strategy": "lazy",
-                    "upstream_cert": False,
-                    "ssl_insecure": False,
-                    "ignore_hosts": [],
-                    "flow_detail": 0,
-                    "termlog_verbosity": "error",
-                }
-                if upstream_ca is not None:
-                    trusted = path / "trusted-upstream-ca.pem"
-                    shutil.copyfile(upstream_ca, trusted)
-                    os.chmod(trusted, 0o600)
-                    config["ssl_verify_upstream_trusted_ca"] = str(trusted)
-                (path / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
-                os.chmod(path / "config.yaml", 0o600)
+                directory = await _prepared_directory(ca, payload, port, upstream_ca)
+                path = Path(directory.name)
                 read_fd, write_fd = os.pipe()
                 env = os.environ.copy()
                 env["DRAVENPDF_PROXY_POLICY"] = str(path / "policy.json")
@@ -143,7 +179,8 @@ class ProxyGate:
                     await gate.close()
                 else:
                     await _stop_orphan(process)
-                    directory.cleanup()
+                    if directory is not None:
+                        directory.cleanup()
                 # Anything else gets another attempt, while the deadline allows.
                 if isinstance(exc, asyncio.CancelledError) or (
                     isinstance(exc, TimeoutError) and loop.time() >= deadline

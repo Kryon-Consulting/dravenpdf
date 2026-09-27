@@ -290,9 +290,9 @@ class AsyncRenderer:
         deadline = loop.time() + opts.timeout_ms / 1000
         try:
             async with self.pool.admission(deadline), asyncio.timeout_at(deadline):
-                gate = await ProxyGate.start(
-                    guard.proxy_policy(new_credential(), deadline), self.pool.proxy_ca, deadline
-                )
+                # proxy_policy base64-encodes the asset bundle: keep it off the event loop.
+                policy = await asyncio.to_thread(guard.proxy_policy, new_credential(), deadline)
+                gate = await ProxyGate.start(policy, self.pool.proxy_ca, deadline)
                 redirects: RedirectGate | None = None
                 reported = 0  # proxy blocks already handed to the guard
 

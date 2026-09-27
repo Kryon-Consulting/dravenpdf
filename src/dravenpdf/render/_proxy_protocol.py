@@ -22,14 +22,22 @@ class ProxyPolicy:
     def __repr__(self) -> str:
         return "ProxyPolicy(<redacted>)"
 
-    def write(self, path: Path) -> None:
+    def to_json(self) -> bytes:
+        return json.dumps(asdict(self)).encode("utf-8")
+
+    @staticmethod
+    def write_json(path: Path, data: bytes) -> None:
+        """Write serialized policy ``data`` to a new file only its owner can read."""
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(asdict(self), stream)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+
+    def write(self, path: Path) -> None:
+        self.write_json(path, self.to_json())
 
     @classmethod
     def read(cls, path: Path) -> ProxyPolicy:
