@@ -4,11 +4,11 @@ services:
     image: dravenpdf:latest
     init: true            # reaps Chromium child processes
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${DRAVENPDF_PORT:-8000}:8000"
     environment:
       DRAVENPDF_API_KEY: ${DRAVENPDF_API_KEY:?set DRAVENPDF_API_KEY}
-      DRAVENPDF_MAX_CONCURRENCY: "4"
-      DRAVENPDF_WORKERS: "1"
+      DRAVENPDF_MAX_CONCURRENCY: ${DRAVENPDF_MAX_CONCURRENCY:-2}
+      DRAVENPDF_WORKERS: ${DRAVENPDF_WORKERS:-1}
       # DRAVENPDF_ALLOWED_HOSTS: "cdn.example.com,*.example.org"
       # Signing keys stay on the server (mount them read-only):
       # DRAVENPDF_SIGNING_KEYS: '{"company": {"pkcs12": "/keys/company.p12", "password_file": "/run/secrets/company"}}'

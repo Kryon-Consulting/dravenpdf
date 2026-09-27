@@ -1,0 +1,9 @@
+[
+  {"name": "dashboard", "path": "/dashboard", "heading": "Dashboard", "wait_for": "Security verdict"},
+  {"name": "findings", "path": "/findings?tab=trends", "heading": "Findings", "wait_for": "Service Risk vs. Remediation Speed", "wait_until_hidden": "Loading service data"},
+  {"name": "finding-service-risk-chart", "path": "/findings?tab=trends", "heading": "Findings", "wait_for": "Service Risk vs. Remediation Speed", "wait_until_hidden": "Loading service data", "clip": {"x": 278, "y": 232, "width": 565, "height": 532}},
+  {"name": "finding-regional-sla-chart", "path": "/findings?tab=trends", "heading": "Findings", "wait_for": "Regional Security Operations", "wait_until_hidden": "Loading service data", "clip": {"x": 854, "y": 232, "width": 565, "height": 532}},
+  {"name": "exposure", "path": "/exposure", "heading": "Exposure & Attack Paths"},
+  {"name": "inventory", "path": "/inventory", "heading": "Inventory"},
+  {"name": "compliance", "path": "/compliance", "heading": "Compliance"}
+]

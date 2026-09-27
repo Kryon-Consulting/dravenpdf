@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Valio Guard | Platform report</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html { font-family: Arial, Helvetica, sans-serif; color: #17243e; font-size: 10pt; }
+    body { margin: 0; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 35pt; line-height: 1.08; letter-spacing: -1.5pt; }
+    h2 { font-size: 20pt; letter-spacing: -.5pt; margin-bottom: 7mm; }
+    h3 { font-size: 11pt; margin-bottom: 2mm; }
+    p { line-height: 1.47; color: #40506a; }
+    ul { padding-left: 5mm; margin: 0; }
+    li { line-height: 1.45; margin-bottom: 2.5mm; }
+    .page { page-break-after: always; min-height: 250mm; }
+    .page:last-child { page-break-after: auto; }
+    .eyebrow { color: #1e5bda; font-weight: 700; font-size: 8pt; letter-spacing: 1.7pt; text-transform: uppercase; }
+    .lede { font-size: 13pt; line-height: 1.44; color: #344965; max-width: 160mm; }
+    .brand { color: #1559e8; font-weight: 800; letter-spacing: 1.9pt; font-size: 10pt; }
+    .rule { width: 19mm; height: 2.3mm; background: #1d61ef; border-radius: 2mm; margin: 9mm 0; }
+    .cover { padding-top: 17mm; }
+    .cover h1 { margin-top: 25mm; max-width: 150mm; }
+    .cover .lede { margin-top: 7mm; }
+    .cover-band { margin-top: 20mm; background: #edf3ff; border-left: 3mm solid #1d61ef; padding: 8mm; }
+    .cover-band strong { color: #142b55; }
+    .meta { color: #687892; font-size: 8.5pt; }
+    .bottom-note { margin-top: 18mm; color: #738198; font-size: 8pt; }
+    .section-head { border-bottom: 1px solid #dce4f0; padding-bottom: 5mm; margin-bottom: 7mm; }
+    .section-head h2 { margin: 3mm 0 2mm; }
+    .section-head p { margin: 0; }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; margin: 8mm 0; }
+    .metric { background: #f3f6fb; border: 1px solid #e1e8f2; border-radius: 3mm; padding: 5mm; min-height: 26mm; }
+    .metric b { display: block; font-size: 18pt; color: #15284b; margin-bottom: 1mm; }
+    .metric span { color: #5c6d85; font-size: 8pt; }
+    .callout { background: #fff5ec; border-left: 2mm solid #e78324; padding: 5mm 6mm; margin: 7mm 0; }
+    .callout p { margin: 0; }
+    .priority { display: grid; grid-template-columns: 8mm 1fr; gap: 3mm; border-top: 1px solid #e3eaf4; padding: 5mm 0; }
+    .priority .number { color: #1d61ef; font-weight: 800; font-size: 13pt; }
+    .priority p { margin: 1mm 0 0; }
+    .visual { border: 1px solid #dbe4f0; border-radius: 3mm; overflow: hidden; background: #fff; margin: 5mm 0 3mm; }
+    .visual img { width: 100%; display: block; }
+    .chart-visual { width: 85%; margin-left: auto; margin-right: auto; }
+    figcaption { color: #66758c; font-size: 8pt; line-height: 1.35; margin-bottom: 7mm; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 9mm; }
+    .insight { background: #f5f8ff; border-radius: 3mm; padding: 5mm 6mm; margin: 7mm 0; }
+    .insight p { margin-bottom: 0; }
+    .fact-list { border-top: 1px solid #dce4f0; margin-top: 6mm; }
+    .fact { display: grid; grid-template-columns: 43mm 1fr; gap: 4mm; padding: 4mm 0; border-bottom: 1px solid #e8edf5; }
+    .fact strong { color: #182b4e; }
+    .fact span { color: #4b5d76; }
+    .small { font-size: 8.5pt; }
+    .source { font-size: 8pt; color: #6a7891; margin-top: 6mm; }
+  </style>
+</head>
+<body>
+  <section class="page cover">
+    <div class="brand">◆ VALIO GUARD</div>
+    <div class="rule"></div>
+    <div class="eyebrow">Platform overview · demo tenant</div>
+    <h1>From security posture to prioritized action</h1>
+    <p class="lede">An illustrated walkthrough of the Dashboard, Findings, Exposure &amp; Attack Paths, Inventory, and Compliance workspaces.</p>
+    <div class="cover-band">
+      <strong>Northwind Logistics demo environment</strong><br>
+      UI captured 27 September 2026 from <code>https://localhost:9000/</code><br>
+      Latest dashboard rollup shown: 26 September 2026
+    </div>
+    <p class="bottom-note">This report describes the demo interface and its displayed sample data. It is not an independent security assessment or a statement about a production estate.</p>
+  </section>
+
+  <section class="page">
+    <div class="section-head">
+      <div class="eyebrow">01 · Executive summary</div>
+      <h2>A single path from signal to action</h2>
+      <p>Valio Guard puts posture, operational findings, attack-path context, asset inventory, and assurance evidence in connected workspaces.</p>
+    </div>
+    <p>The demo Dashboard makes the current risk position legible at a glance, then points investigators toward prioritized fixes. Findings adds volume, age, and SLA context; Exposure narrows work to reachable assets and paths; Inventory shows the underlying resources; Compliance tracks framework status and evidence.</p>
+    <div class="summary-grid">
+      <div class="metric"><b>1,097</b><span>critical or high risk resources in the Dashboard's selected highest-risk account</span></div>
+      <div class="metric"><b>11,294</b><span>open findings shown across the selected company scope</span></div>
+      <div class="metric"><b>12%</b><span>average compliance score in the displayed 90-day aggregate</span></div>
+    </div>
+    <div class="callout"><p><strong>Read the scope first.</strong> The UI shows partial scan coverage: 5 of 6 connected accounts scanned, with one account counted from 24 September. Several views mix daily rollups with live or account-specific data. These figures should not be added together or treated as a fully current company-wide measurement.</p></div>
+    <h3>What deserves attention in this snapshot</h3>
+    <div class="priority"><div class="number">1</div><div><strong>Work the highest-impact fixes.</strong><p>The Dashboard names the highest-risk account and offers a ranked remediation queue. Review the underlying asset and path evidence before making changes.</p></div></div>
+    <div class="priority"><div class="number">2</div><div><strong>Reduce aged finding debt.</strong><p>Findings shows 6,569 overdue items and 1,573 critical or high items; its regional panel flags five regions below the 95% SLA threshold.</p></div></div>
+    <div class="priority"><div class="number">3</div><div><strong>Resolve coverage gaps.</strong><p>Confirm the latest scan status and the account whose contribution is older before using a headline metric in a decision or external report.</p></div></div>
+    <p class="source">Source: Valio Guard demo UI, captured 27 September 2026. Numbers are transcribed from the displayed screens.</p>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">02 · Dashboard</div><h2>Risk posture with a clear next step</h2><p>The landing view pairs a security verdict with reachability, remediation speed, and estate context.</p></div>
+    <figure class="visual"><img src="images/dashboard.png" alt="Valio Guard Dashboard security verdict and estate"></figure>
+    <figcaption>Dashboard, all-account scope, with the verdict focused on Production - Order Platform. The capture shows the rollup date and partial-coverage warning above the metrics.</figcaption>
+    <div class="two-col"><div><h3>What it communicates</h3><p>The selected account is rated Critical with 1,097 critical or high risk resources, up 24 since the last scan. The view also shows 104 reachable crown jewels and a 42.4-day mean time to remediate.</p></div><div><h3>How to use it</h3><p>Use the risk-driver link and prioritized-action queue to move from the headline to a principal, resource, finding, or remediation. Preserve the account and date labels when sharing the numbers.</p></div></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">03 · Findings</div><h2>Volume, age, and service-level pressure</h2><p>The Trends &amp; SLA view helps explain where remediation is slow and where critical findings remain open.</p></div>
+    <figure class="visual"><img src="images/findings.png" alt="Findings Trends and SLA charts"></figure>
+    <figcaption>Findings, Trends &amp; SLA tab. The regional panel marks five regions below 95% SLA; chart values belong to the displayed all-account scope.</figcaption>
+    <div class="two-col"><div><h3>Operational signal</h3><p>The page reports 11,294 open findings, including 1,573 critical or high and 6,569 overdue. The plotted services compare open-finding volume with remediation time.</p></div><div><h3>Action</h3><p>Start with overdue, high-severity groups and open the associated findings before assigning work. The regional list offers another way to find concentrations of aged debt.</p></div></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">03a · Findings chart</div><h2>Compare risk volume with remediation speed</h2><p>Each plotted service sits at the intersection of open findings and mean time to remediate. Bubble size represents critical and high severity volume.</p></div>
+    <figure class="visual chart-visual"><img src="images/finding-service-risk-chart.png" alt="Service Risk vs. Remediation Speed scatter chart"></figure>
+    <figcaption>Service Risk vs. Remediation Speed, enlarged from the Findings Trends &amp; SLA view. Four of five accounts reported; one contribution is dated 24 September 2026.</figcaption>
+    <div class="insight"><h3>How to read this chart</h3><p>Services farther right have more open findings; services higher up take longer to remediate. The upper-right area is the clearest candidate for a focused investigation, with severity and overdue status checked in the underlying findings list.</p></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">03b · Findings chart</div><h2>See where regional SLA debt concentrates</h2><p>The regional panel pairs SLA compliance with critical-finding counts and aged volume.</p></div>
+    <figure class="visual"><img src="images/finding-regional-sla-chart.png" alt="Regional Security Operations SLA bars"></figure>
+    <figcaption>Regional Security Operations, enlarged from the Findings Trends &amp; SLA view. The panel flags five regions below the 95% SLA target; four of five accounts reported.</figcaption>
+    <div class="insight"><h3>Follow-up</h3><p>Use the regional bars to select a queue, then confirm severity, age, and ownership in the underlying findings before assigning remediation. These percentages reflect the displayed demo scope and its partial coverage.</p></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">04 · Exposure &amp; attack paths</div><h2>Move from a finding to a reachable route</h2><p>This workspace relates entry points, paths, targets, guardrails, and remediations.</p></div>
+    <figure class="visual"><img src="images/exposure.png" alt="Exposure and Attack Paths workspace"></figure>
+    <figcaption>Exposure is scoped to Sandbox - Test Account in this capture. Its counts must not be read as the company-wide Dashboard verdict.</figcaption>
+    <p>The selected sandbox account shows six critical resources in its current exposure panel, while the panel shows zero internet-exposed resources and zero of zero crown jewels reachable from an internet-exposed entry point. The tabs below invite investigation of individual routes and ranked remediations. The account selector is central: changing scope changes the meaning of every count on the page.</p>
+    <div class="insight"><h3>Report-reading rule</h3><p>Label both account scope and scan provenance on any exported screenshot. A zero on this sandbox view does not negate the company-wide or highest-risk-account signals elsewhere.</p></div>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">05 · Inventory</div><h2>Trace the posture back to assets</h2><p>The list provides searchable resources, account and region context, criticality, findings, and exposure.</p></div>
+    <figure class="visual"><img src="images/inventory.png" alt="Inventory resource list"></figure>
+    <figcaption>Inventory, all-account scope. The headline is a daily rollup; the matching-resource list is a live view. Their totals use different grains.</figcaption>
+    <p>The page shows a 3,197-resource daily rollup and a live list of 3,210 matching resources. Risk-ranked rows make it possible to open a specific identity or workload and inspect its findings. The difference between those two counts is a reason to retain their labels, not to silently reconcile them into one total.</p>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">06 · Compliance</div><h2>Assurance status with evidence routes</h2><p>Frameworks, evidence, audit readiness, breakdowns, and drift share one workspace.</p></div>
+    <figure class="visual"><img src="images/compliance.png" alt="Compliance framework overview"></figure>
+    <figcaption>Compliance, all-account scope. The score is a displayed 90-day aggregate over the latest scan per contributing account.</figcaption>
+    <p>The demo reports a 12% average compliance score, 45 evaluated frameworks, and 1,488 of 9,198 requirements passing. The page labels all 45 frameworks in the Critical (&lt;60%) band. Use the framework and evidence tabs to validate which controls are driving that score before selecting remediation work.</p>
+  </section>
+
+  <section class="page">
+    <div class="section-head"><div class="eyebrow">07 · Recommended operating rhythm</div><h2>Turn the view into a review cycle</h2><p>A repeatable sequence keeps action tied to evidence and scope.</p></div>
+    <div class="priority"><div class="number">1</div><div><strong>Confirm freshness and coverage.</strong><p>Read the selected account, rollup date, scanned-account count, and stale-account note before interpreting any score.</p></div></div>
+    <div class="priority"><div class="number">2</div><div><strong>Review the Dashboard's recommended fixes.</strong><p>Open the linked paths and affected resources; record the expected reduction and owner.</p></div></div>
+    <div class="priority"><div class="number">3</div><div><strong>Work finding debt by severity and age.</strong><p>Use Findings' SLA and regional views to prioritize overdue critical and high items, then track their status.</p></div></div>
+    <div class="priority"><div class="number">4</div><div><strong>Validate the asset and control context.</strong><p>Trace selected findings through Inventory and Exposure; use Compliance evidence to confirm control-level impact.</p></div></div>
+    <div class="priority"><div class="number">5</div><div><strong>Revisit after the next scan.</strong><p>Compare the same scopes and grains, and note changes in coverage before describing movement.</p></div></div>
+    <h3 style="margin-top:12mm">Method and limits</h3>
+    <div class="fact-list small">
+      <div class="fact"><strong>Source</strong><span>Authenticated Northwind Logistics demo UI at https://localhost:9000/.</span></div>
+      <div class="fact"><strong>Capture</strong><span>Five browser views and two enlarged chart captures saved locally on 27 September 2026.</span></div>
+      <div class="fact"><strong>Evidence level</strong><span>Screen-level walkthrough only; no independent API, scan, asset, or control validation.</span></div>
+      <div class="fact"><strong>Data scope</strong><span>Mixed all-account and account-specific views; daily rollup, live, and 90-day measures are labeled separately.</span></div>
+    </div>
+  </section>
+</body>
+</html>

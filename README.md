@@ -101,16 +101,44 @@ dravenpdf images report.pdf --dpi 150 -o pages/
 ### HTTP service
 
 ```bash
-docker build -t dravenpdf .
-docker run --init -p 8000:8000 -e DRAVENPDF_API_KEY=change-me dravenpdf
-# or without Docker: DRAVENPDF_API_KEY=change-me dravenpdf serve
+cp .env.example .env              # replace DRAVENPDF_API_KEY with a unique key
+docker compose up --build -d
+curl http://127.0.0.1:8000/readyz
 
-curl -X POST http://localhost:8000/v1/render/html \
-  -H "X-API-Key: change-me" -H "Content-Type: application/json" \
+curl -X POST http://127.0.0.1:8000/v1/render/html \
+  -H "X-API-Key: $(sed -n 's/^DRAVENPDF_API_KEY=//p' .env)" \
+  -H "Content-Type: application/json" \
   -d '{"html":"<h1>Hello</h1>"}' -o hello.pdf
 ```
 
+Compose binds the API to localhost by default. The local `.env` stays out of git and
+the Docker build context; adjust `DRAVENPDF_PORT`, `DRAVENPDF_WORKERS`, and
+`DRAVENPDF_MAX_CONCURRENCY` there as needed. The image also works without Compose
+via `docker run --init -p 8000:8000 -e DRAVENPDF_API_KEY=... dravenpdf`.
+
 All endpoints and settings are in [docs/http-api.md](docs/http-api.md).
+
+### Platform report from HTML
+
+The [report script](scripts/build_platform_report.py) bundles a local HTML file and
+its referenced images or stylesheets, sends them to the running PDF API, and writes
+the returned PDF. The included [example report](reports/platform_report.html)
+captures the Valio Guard demo at `https://localhost:9000/`, including two enlarged
+Findings charts, and saves screenshots in `images/`.
+
+```bash
+uv sync --all-extras
+docker compose up -d
+.venv/bin/python scripts/build_platform_report.py reports/platform_report.html \
+  --capture-manifest reports/platform_views.json --demo-login
+```
+
+The PDF is written to `output/pdf/platform-report.pdf`. To render edited HTML
+using the existing screenshots, omit `--capture-manifest` and `--demo-login`.
+Supply `--output` for another PDF path or `--storage-state` for a Playwright
+authentication-state file when the demo login is unavailable. The script reads the
+PDF API key from `DRAVENPDF_API_KEY` or the local `.env` file. Referenced assets
+must be under `--asset-root` (the repository root by default).
 
 ## Documentation
 
