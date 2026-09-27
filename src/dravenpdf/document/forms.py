@@ -24,6 +24,8 @@ from typing import Literal
 import pikepdf
 from pikepdf import form as pf
 
+from dravenpdf.document._objects import acroform as _acroform
+from dravenpdf.document._objects import remove_annotations
 from dravenpdf.errors import PdfOperationError
 
 FieldKind = Literal["text", "checkbox", "radio", "choice", "signature", "button"]
@@ -57,11 +59,6 @@ def _encodable(text: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
-
-
-def _acroform(pdf: pikepdf.Pdf) -> pikepdf.Dictionary | None:
-    acroform = pdf.Root.get("/AcroForm")
-    return acroform if isinstance(acroform, pikepdf.Dictionary) else None
 
 
 def _check_xfa(pdf: pikepdf.Pdf) -> None:
@@ -123,15 +120,15 @@ def fill(pdf: pikepdf.Pdf, values: Mapping[str, FieldValue], *, flatten: bool = 
     unknown = sorted(set(values) - set(fields))
     if unknown:
         raise PdfOperationError(f"no such form field(s): {', '.join(unknown)}")
-    viewer_drawn: list[str] = []
+    viewer_drawn: set[str] = set()
     for name, value in values.items():
         _validate(described[name], value)
         if isinstance(value, str) and not _encodable(value):
-            viewer_drawn.append(name)
+            viewer_drawn.add(name)
     if flatten and viewer_drawn:
         raise PdfOperationError(
             "can't flatten non-Western-European text (fields: "
-            f"{', '.join(viewer_drawn)}); fill without flattening, and viewers will draw it"
+            f"{', '.join(sorted(viewer_drawn))}); fill without flattening, and viewers will draw it"
         )
 
     acroform = _acroform(pdf)
@@ -205,13 +202,6 @@ def flatten_form(pdf: pikepdf.Pdf) -> None:
     pdf.flatten_annotations(mode="all")
     # QPDF skips widgets with nothing to draw (empty fields, unselected radio buttons);
     # with the form gone they'd be dead, so remove them.
-    for page in pdf.pages:
-        annots = page.obj.get("/Annots")
-        if isinstance(annots, pikepdf.Array):
-            kept = [a for a in annots if a.get("/Subtype") != pikepdf.Name.Widget]
-            if kept:
-                page.obj.Annots = pikepdf.Array(kept)
-            else:
-                del page.obj["/Annots"]
+    remove_annotations(pdf, lambda a: a.get("/Subtype") == pikepdf.Name.Widget)
     if "/AcroForm" in pdf.Root:
         del pdf.Root["/AcroForm"]

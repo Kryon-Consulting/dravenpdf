@@ -10,6 +10,7 @@ from typing import Any, Literal
 import img2pdf
 
 from dravenpdf.document._pdfium import open_pdf
+from dravenpdf.document.pages import normalize_indices
 from dravenpdf.errors import LimitExceededError, PdfOperationError
 from dravenpdf.options import PaperSize
 
@@ -101,18 +102,16 @@ def pdf_to_images(
     total = 0
     with open_pdf(pdf) as doc:
         count = len(doc)
-        indices = range(count) if pages is None else list(pages)
+        indices = range(count) if pages is None else normalize_indices(pages, count)
         for index in indices:
-            if not -count <= index < count:
-                raise PdfOperationError(f"page index {index} is out of range for {count} pages")
-            page = doc[index % count]
+            page = doc[index]
             try:
                 if max_pixels is not None:
                     width, height = page.get_size()
                     pixels = round(width * scale) * round(height * scale)
                     if pixels > max_pixels:
                         raise LimitExceededError(
-                            f"page {index % count + 1} would be {pixels:,} pixels at {dpi} dpi; "
+                            f"page {index + 1} would be {pixels:,} pixels at {dpi} dpi; "
                             f"the limit is {max_pixels:,} (lower the dpi)"
                         )
                 bitmap = page.render(scale=scale)

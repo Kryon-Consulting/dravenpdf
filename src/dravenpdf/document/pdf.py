@@ -20,6 +20,7 @@ from dravenpdf.document import pages as ops
 from dravenpdf.document import signing as sign_ops
 from dravenpdf.document import stamp as stamp_ops
 from dravenpdf.document import text as text_ops
+from dravenpdf.document._secret import reveal
 from dravenpdf.document.forms import FieldValue, FormField
 from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.signing import SignatureBox, SignatureInfo, SigningKey
@@ -57,10 +58,6 @@ METADATA_KEYS: dict[str, str] = {
     "mod_date": "/ModDate",
 }
 _EDITABLE = ("title", "author", "subject", "keywords", "creator", "producer")
-
-
-def _plain(value: str | SecretStr) -> str:
-    return value.get_secret_value() if isinstance(value, SecretStr) else value
 
 
 def _as_pdf(document: PdfDocument | bytes) -> pikepdf.Pdf:
@@ -113,7 +110,7 @@ class PdfDocument:
         Opening decrypts: the document and anything derived from it are written
         unencrypted unless you call :meth:`encrypt`.
         """
-        secret = password.get_secret_value() if isinstance(password, SecretStr) else password
+        secret = reveal(password)
         try:
             pdf = pikepdf.open(io.BytesIO(data), password=secret or "")
         except pikepdf.PasswordError:
@@ -181,11 +178,7 @@ class PdfDocument:
     def page_size(self, index: int = 0) -> tuple[float, float]:
         """(width, height) of a page in points, as displayed (rotation applied)."""
         (i,) = ops.normalize_indices([index], self.page_count)
-        page = self._pdf.pages[i]
-        box = [float(v) for v in page.mediabox]
-        width, height = abs(box[2] - box[0]), abs(box[3] - box[1])
-        rotation = int(page.rotation) % 360
-        return (height, width) if rotation in (90, 270) else (width, height)
+        return stamp_ops.displayed_size(self._pdf.pages[i])
 
     # ------------------------------------------------------------------ page operations
 
@@ -327,11 +320,26 @@ class PdfDocument:
     ) -> PdfDocument:
         """Draw a page of another PDF (letterhead, form background, ...) on each page,
         scaled to fit and centered. ``under=True`` puts it behind the content."""
-        result = ops.clone(self._rewritable())
-        stamp_ops.overlay_page(
-            result, _as_pdf(stamp), stamp_page=stamp_page, opacity=opacity,
-            pages=pages, under=under,
+        return self._overlay_all(
+            [(_as_pdf(stamp), pages)], stamp_page=stamp_page, opacity=opacity, under=under,
+            stacklevel=4,
         )  # fmt: skip
+
+    def _overlay_all(
+        self,
+        stamps: Sequence[tuple[pikepdf.Pdf, Iterable[int] | None]],
+        *,
+        stamp_page: int = 0,
+        opacity: float,
+        under: bool,
+        stacklevel: int = 3,
+    ) -> PdfDocument:
+        """Overlay each (stamp, pages) pair onto one copy of this document."""
+        result = ops.clone(self._rewritable(stacklevel=stacklevel))
+        for stamp, pages in stamps:
+            stamp_ops.overlay_page(
+                result, stamp, stamp_page=stamp_page, opacity=opacity, pages=pages, under=under
+            )
         return self._derive(ops._detach(result))
 
     async def stamp_html(
@@ -354,7 +362,9 @@ class PdfDocument:
         for index in targets:
             size = self.page_size(index)
             by_size.setdefault((round(size[0], 2), round(size[1], 2)), []).append(index)
-        result = self
+        if not by_size:
+            return self
+        stamps: list[tuple[pikepdf.Pdf, Iterable[int] | None]] = []
         for (width, height), indices in by_size.items():
             stamp = await renderer.from_html(
                 html,
@@ -365,11 +375,10 @@ class PdfDocument:
                 ),
                 base_url=base_url,
             )
-            # Overlaying is CPU-bound pikepdf work; keep it off the event loop.
-            result = await asyncio.to_thread(
-                result.overlay, stamp, opacity=opacity, pages=indices, under=under
-            )
-        return result
+            stamps.append((stamp._pdf, indices))
+        # Overlaying is CPU-bound pikepdf work; keep it off the event loop. All sizes go
+        # onto one copy, so the document is rewritten once however many sizes it has.
+        return await asyncio.to_thread(self._overlay_all, stamps, opacity=opacity, under=under)
 
     # ------------------------------------------------------------------ images and text
 
@@ -497,8 +506,8 @@ class PdfDocument:
         technically copy or print it. Use a user password to actually protect content.
         Operations on the result keep its encryption.
         """
-        user = _plain(user_password)
-        owner = _plain(owner_password) if owner_password is not None else secrets.token_urlsafe(32)
+        user = reveal(user_password)
+        owner = reveal(owner_password) if owner_password is not None else secrets.token_urlsafe(32)
         if not owner:
             raise PdfOperationError("owner_password must not be empty")
         permissions = pikepdf.Permissions(
