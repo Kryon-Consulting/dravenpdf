@@ -269,7 +269,7 @@ class PdfDocument:
             title=title, author=author, subject=subject,
             keywords=keywords, creator=creator, producer=producer,
         )  # fmt: skip
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         for name in _EDITABLE:
             value = values[name]
             if value is None:
@@ -305,7 +305,7 @@ class PdfDocument:
         Western European (cp1252) characters only; use :meth:`stamp_html` for other
         scripts or richer styling. ``margin`` (points) applies to non-center positions.
         """
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         stamp_ops.stamp_text(
             result, text, font_size=font_size, color=color, opacity=opacity, angle=angle,
             position=position, margin=margin, pages=pages, under=under,
@@ -325,7 +325,7 @@ class PdfDocument:
     ) -> PdfDocument:
         """Image stamp (PNG, JPEG, ...; transparency kept). ``width`` in points,
         default the image's size at 96 dpi; shrunk to fit inside the margins."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         stamp_ops.stamp_image(
             result, image, width=width, position=position, margin=margin,
             opacity=opacity, pages=pages, under=under,
@@ -358,7 +358,7 @@ class PdfDocument:
         stacklevel: int = 3,
     ) -> PdfDocument:
         """Overlay each (stamp, pages) pair onto one copy of this document."""
-        result = ops.clone(self._rewritable(stacklevel=stacklevel))
+        result = self._writable_copy(stacklevel=stacklevel + 1)
         for stamp, pages in stamps:
             stamp_ops.overlay_page(
                 result, stamp, stamp_page=stamp_page, opacity=opacity, pages=pages, under=under
@@ -489,13 +489,13 @@ class PdfDocument:
         checkboxes, an option name for radio groups. Everything is checked first, so
         either all values apply or none (``PdfOperationError``). ``flatten=True`` also
         burns the values into the pages and removes the form."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         form_ops.fill(result, values, flatten=flatten)
         return self._derive(result)
 
     def flatten_form(self) -> PdfDocument:
         """Burn the current field values into the pages and remove the form."""
-        result = ops.clone(self._rewritable())
+        result = self._writable_copy()
         form_ops.flatten_form(result)
         return self._derive(result)
 
@@ -587,13 +587,13 @@ class PdfDocument:
             print_lowres=allow_print,
             print_highres=allow_print,
         )
-        result = self._derive(ops.clone(self._rewritable()))
+        result = self._derive(self._writable_copy())
         result._encryption = pikepdf.Encryption(owner=owner, user=user, allow=permissions)
         return result
 
     def decrypt(self) -> PdfDocument:
         """A copy that is written without encryption."""
-        result = self._derive(ops.clone(self._rewritable()))
+        result = self._derive(self._writable_copy())
         result._encryption = None
         return result
 
@@ -621,6 +621,13 @@ class PdfDocument:
             stacklevel=stacklevel,
         )
         return unsigned
+
+    def _writable_copy(self, *, stacklevel: int = 4) -> pikepdf.Pdf:
+        """A private copy for an operation to modify: :meth:`_rewritable`'s PDF, which
+        is already a fresh copy for a signed document, else a clone of this one.
+        ``stacklevel`` counts from :meth:`_rewritable`, as its warning is raised there."""
+        source = self._rewritable(stacklevel=stacklevel)
+        return ops.clone(source) if source is self._pdf else source
 
     def _derive(self, pdf: pikepdf.Pdf) -> PdfDocument:
         """A document made from this one: keeps its pending encryption.

@@ -597,3 +597,37 @@ def test_cli_verify_encrypted_file(tmp_path: Path, key: SigningKey) -> None:
     assert checked.exit_code == 0, checked.output
     assert json.loads(checked.stdout)[0]["ok"] is True
     assert isinstance(missing.exception, PdfPasswordError)
+
+
+@pytest.mark.parametrize(
+    ("edit", "copies"),
+    [
+        (lambda doc: doc.stamp_text("x"), 1),
+        (lambda doc: doc.set_metadata(title="x"), 1),
+        (lambda doc: doc.encrypt(user_password="u"), 1),
+        # One copy of the input, and _detach() of the result (it has foreign pages).
+        (lambda doc: doc.overlay(blank(1)), 2),
+    ],
+)
+def test_signed_edits_clone_once_and_warn_at_the_caller(
+    key: SigningKey,
+    monkeypatch: pytest.MonkeyPatch,
+    edit: Callable[[PdfDocument], object],
+    copies: int,
+) -> None:
+    from dravenpdf.document import pages as ops
+
+    signed = signed_visibly(key)
+    clones: list[object] = []
+    real_clone = ops.clone
+
+    def counting_clone(pdf: pikepdf.Pdf) -> pikepdf.Pdf:
+        clones.append(pdf)
+        return real_clone(pdf)
+
+    monkeypatch.setattr(ops, "clone", counting_clone)
+    with pytest.warns(SignatureInvalidatedWarning) as caught:
+        edit(signed)
+
+    assert len(clones) == copies
+    assert caught[0].filename == __file__
