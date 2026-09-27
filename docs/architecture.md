@@ -115,10 +115,11 @@ DravenPdfError
 - **`renderer.py` – `AsyncRenderer`**: `from_html`, `from_url`, `from_file`,
   `from_template`. One deadline (`timeout_ms`) covers the whole call: the wait for a
   slot, proxy startup, launching Chromium, creating the context and page, loading,
-  waiting and printing. Each call: start the proxy → lease an isolated browser and
-  proxied context → install the local-file guard and redirect observer → load, wait
-  and print → close the context and observer → close the proxy → return a
-  `PdfDocument`. A late context cleanup keeps its proxy alive until cleanup finishes.
+  waiting and printing. Each call: reserve a bounded pool slot → start the proxy →
+  lease an isolated browser and proxied context → install the local-file guard and
+  redirect observer → load, wait and print → close the context and observer → close
+  the proxy → release the slot → return a `PdfDocument`. A late context cleanup
+  keeps its proxy alive until cleanup finishes.
 - **`assets.py`**: `AssetBundle` for `from_html(..., assets=...)`. The page loads from
   `https://bundle.dravenpdf.invalid/` (a reserved domain that can't resolve); the
   proxy addon answers owned URLs from memory with the bundle's 200/404 behavior,

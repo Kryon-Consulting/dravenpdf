@@ -290,13 +290,13 @@ class AsyncRenderer:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + opts.timeout_ms / 1000
         try:
-            async with asyncio.timeout_at(deadline):
+            async with self.pool.admission(deadline), asyncio.timeout_at(deadline):
                 gate = await ProxyGate.start(
                     guard.proxy_policy(new_credential(), deadline), self.pool.proxy_ca, deadline
                 )
                 redirects: RedirectGate | None = None
                 try:
-                    async with self.pool.context(
+                    async with self.pool._context_after_admission(
                         deadline=deadline,
                         isolated=True,
                         service_workers="block",

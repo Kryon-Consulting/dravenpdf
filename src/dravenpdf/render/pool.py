@@ -263,19 +263,8 @@ class BrowserPool:
     # ------------------------------------------------------------------ contexts
 
     @asynccontextmanager
-    async def context(
-        self, *, deadline: float | None = None, isolated: bool = False, **options: Any
-    ) -> AsyncIterator[BrowserContext]:
-        """A new, isolated browser context; closed when the block exits.
-
-        ``deadline`` (event-loop time, as from ``loop.time()``) bounds everything
-        before the block runs: waiting for a free slot, launching Chromium if needed,
-        and creating the context. Past it, :class:`TimeoutError` is raised. Other
-        keyword arguments go to Playwright's ``browser.new_context()``.
-        ``isolated=True`` leases a dedicated process, closed after this context;
-        strict renders use this mode for browser-wide redirect interception.
-        It adds startup/memory cost and bypasses the shared recycle count.
-        """
+    async def admission(self, deadline: float | None = None) -> AsyncIterator[None]:
+        """Reserve one bounded render slot before starting its proxy or browser."""
         if self._semaphore.locked() and self._waiting >= self.max_queue:
             raise PoolExhaustedError(
                 f"{self._active} renders running and {self._waiting} waiting; try again later"
@@ -288,17 +277,41 @@ class BrowserPool:
             self._waiting -= 1
         self._active += 1
         try:
-            async with asyncio.timeout_at(deadline):
-                slot, ctx = await self._open(options, isolated=isolated)
-            try:
-                yield ctx
-            finally:
-                with suppress(PlaywrightError):
-                    await ctx.close()
-                self._release(slot, rendered=True)
+            yield
         finally:
             self._active -= 1
             self._semaphore.release()
+
+    @asynccontextmanager
+    async def context(
+        self, *, deadline: float | None = None, isolated: bool = False, **options: Any
+    ) -> AsyncIterator[BrowserContext]:
+        """A new browser context, closed when the block exits.
+
+        ``deadline`` (event-loop time, as from ``loop.time()``) bounds admission,
+        browser launch and context creation. ``isolated=True`` leases a dedicated
+        process, closed after this context; strict renders use this mode for the
+        browser-wide redirect interceptor.
+        """
+        async with (
+            self.admission(deadline),
+            self._context_after_admission(deadline=deadline, isolated=isolated, **options) as ctx,
+        ):
+            yield ctx
+
+    @asynccontextmanager
+    async def _context_after_admission(
+        self, *, deadline: float | None = None, isolated: bool = False, **options: Any
+    ) -> AsyncIterator[BrowserContext]:
+        """Open a context within a slot already held by ``admission``."""
+        async with asyncio.timeout_at(deadline):
+            slot, ctx = await self._open(options, isolated=isolated)
+        try:
+            yield ctx
+        finally:
+            with suppress(PlaywrightError):
+                await ctx.close()
+            self._release(slot, rendered=True)
 
     async def _open(
         self, options: dict[str, Any], *, isolated: bool = False

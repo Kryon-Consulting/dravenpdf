@@ -8,7 +8,14 @@ from typing import Any
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-from dravenpdf import AsyncRenderer, BrowserPool, RenderError, RenderOptions, RenderTimeoutError
+from dravenpdf import (
+    AsyncRenderer,
+    BrowserPool,
+    PoolExhaustedError,
+    RenderError,
+    RenderOptions,
+    RenderTimeoutError,
+)
 from dravenpdf.render import renderer as renderer_module
 from dravenpdf.render._proxy_gate import ProxyGate
 
@@ -175,6 +182,38 @@ async def test_stalled_context_does_not_delay_render_timeout_or_keep_proxy_forev
     assert pool._current is None  # a stalled Chromium is not reused
     await asyncio.sleep(0.1)
     assert gate.closed
+
+
+async def test_pool_admission_bounds_proxy_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = FakePool(max_concurrency=1, max_queue=1)
+    pool._proxy_ca = object()  # type: ignore[assignment]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    starts = 0
+
+    async def slow_start(*_: Any) -> None:
+        nonlocal starts
+        starts += 1
+        entered.set()
+        await release.wait()
+        raise RenderError("proxy startup stopped")
+
+    monkeypatch.setattr(ProxyGate, "start", slow_start)
+    renderer = AsyncRenderer(pool=pool)
+    tasks = [asyncio.create_task(renderer.from_html("<p>hello</p>")) for _ in range(20)]
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.sleep(0)
+        assert starts == 1
+        assert pool.active == 1
+        assert pool.waiting == 1
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert starts == 2
+    assert sum(isinstance(result, PoolExhaustedError) for result in results) == 18
+    assert sum(isinstance(result, RenderError) for result in results) == 2
+    assert pool.active == 0
 
 
 async def test_failed_launch_is_retried_by_the_next_caller() -> None:

@@ -6,6 +6,7 @@ The addon here is a probe, not the production policy gate.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import socket
 import ssl
@@ -17,7 +18,11 @@ from pathlib import Path
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
+from dravenpdf import AsyncRenderer, RenderError
+from dravenpdf.render import _proxy_gate as gate_module
 from dravenpdf.render._proxy_ca import ProxyCA
+from dravenpdf.render._proxy_gate import ProxyGate
+from dravenpdf.render.guards import RequestGuard
 from dravenpdf.render.pool import DEFAULT_LAUNCH_ARGS, BrowserPool
 from https_fixture import serve_https
 
@@ -358,3 +363,87 @@ async def test_browser_does_not_trust_another_proxy_ca(tmp_path: Path) -> None:
             with pytest.raises(PlaywrightError, match="ERR_CERT_AUTHORITY_INVALID"):
                 await page.goto(sites.a_origin + "/secret?tag=untrusted")
             assert not sites.received("untrusted")
+
+
+async def test_link_local_navigation_reaches_policy_gate() -> None:
+    async with BrowserPool() as pool:
+        gate = await ProxyGate.start(
+            RequestGuard().proxy_policy("link-local-test", None),
+            pool.proxy_ca,
+            asyncio.get_running_loop().time() + 15,
+        )
+        try:
+            async with pool.context(proxy=gate.proxy_options) as context:
+                page = await context.new_page()
+                response = await page.goto("http://169.254.169.254/latest/meta-data/", timeout=5000)
+                assert response is not None
+                assert response.status == 403
+            await gate.synchronize()
+            assert ("http://169.254.169.254", "policy") in gate.blocked
+        finally:
+            await gate.close()
+
+
+async def test_real_connect_rejects_mismatched_inner_authority(tmp_path: Path) -> None:
+    async with wire_origin(tmp_path, True) as (origin, wires, _):
+        ca = ProxyCA.create()
+        try:
+            gate = await ProxyGate.start(
+                RequestGuard(allowed_hosts=["a.test", "b.test"]).proxy_policy(
+                    "authority-test", None
+                ),
+                ca,
+                asyncio.get_running_loop().time() + 15,
+            )
+            try:
+                destination_port = int(origin.rsplit(":", 1)[1])
+                proxy_port = int(gate.proxy_options["server"].rsplit(":", 1)[1])
+                reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+                token = base64.b64encode(b"dravenpdf:authority-test").decode()
+                writer.write(
+                    (
+                        f"CONNECT a.test:{destination_port} HTTP/1.1\r\n"
+                        f"Host: a.test:{destination_port}\r\n"
+                        f"Proxy-Authorization: Basic {token}\r\n\r\n"
+                    ).encode()
+                )
+                await writer.drain()
+                assert b" 200 " in await reader.readline()
+                while await reader.readline() != b"\r\n":
+                    pass
+                tls = ssl._create_unverified_context()
+                await writer.start_tls(tls, server_hostname="a.test")
+                writer.write(
+                    f"GET /mismatch HTTP/1.1\r\nHost: b.test:{destination_port}\r\n\r\n".encode()
+                )
+                await writer.drain()
+                assert b" 403 " in await reader.readline()
+                await gate.synchronize()
+                assert gate.blocked
+                assert all(not wire for wire in wires)
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                await gate.close()
+        finally:
+            ca.close()
+
+
+async def test_real_addon_exception_fails_render_with_skip_and_zero_wire_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    addon = tmp_path / "inject_failure.py"
+    addon.write_text(
+        "from dravenpdf.render._proxy_addon import _load_addon\n"
+        "addon = _load_addon()\n"
+        "async def fail(_url):\n"
+        "    raise RuntimeError('injected policy failure')\n"
+        "addon.network.check = fail\n"
+        "addons = [addon]\n"
+    )
+    monkeypatch.setattr(gate_module, "_ADDON_PATH", addon)
+    async with wire_origin(tmp_path, False) as (origin, wires, _):
+        async with AsyncRenderer(allowed_hosts=["127.0.0.1"], on_blocked="skip") as renderer:
+            with pytest.raises(RenderError, match="network proxy failed"):
+                await renderer.from_url(origin + "/injected")
+        assert all(not wire for wire in wires)

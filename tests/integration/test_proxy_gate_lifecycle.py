@@ -344,7 +344,7 @@ async def test_final_block_check_runs_after_context_closes(
         await original(gate)
         calls += 1
         if calls == 3:  # startup probe, pre-PDF check, final close check
-            assert renderer.pool.active == 0
+            assert renderer.pool.active == 1  # admission remains held through proxy teardown
             assert gate._process.returncode is None
             gate.blocked.append(("http://127.0.0.1:9", "policy"))
 
@@ -358,6 +358,7 @@ async def test_final_block_check_runs_after_context_closes(
             assert doc.render_report is not None
             assert doc.render_report.blocked == [("http://127.0.0.1:9", "policy")]
     assert calls == 3
+    assert renderer.pool.active == 0
 
 
 @pytest.mark.browser

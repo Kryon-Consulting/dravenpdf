@@ -21,6 +21,7 @@ from dravenpdf.render._proxy_protocol import ProxyPolicy
 _START_ATTEMPTS = 3
 _START_LIMIT = 15.0
 _STOP_GRACE = 2.0
+_ADDON_PATH = Path(__file__).with_name("_proxy_addon.py")
 
 
 def _free_loopback_port() -> int:
@@ -112,7 +113,7 @@ class ProxyGate:
                     "--set",
                     f"confdir={path}",
                     "-s",
-                    str(Path(__file__).with_name("_proxy_addon.py")),
+                    str(_ADDON_PATH),
                     "--quiet",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
