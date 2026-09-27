@@ -14,10 +14,9 @@ from urllib.parse import urlsplit
 from mitmproxy import ctx, http, tcp, udp
 
 from dravenpdf.errors import BlockedRequestError
+from dravenpdf.render._netpolicy import NetworkPolicy, Resolver, origin_of, resolve_host
 from dravenpdf.render._proxy_protocol import ProxyPolicy, send_event
 from dravenpdf.render.assets import AssetBundle
-from dravenpdf.render.auth import origin_of
-from dravenpdf.render.guards import NetworkPolicy, Resolver, resolve_host
 
 EventSink = Callable[[dict[str, str]], None]
 
@@ -78,8 +77,6 @@ class ProxyAddon:
         token = base64.b64encode(f"dravenpdf:{policy.credential}".encode()).decode()
         self._expected_auth = f"Basic {token}"
         self.control_alive = True
-        # A render-wide budget is conservative, but does not depend on guessing
-        # how Chromium will resolve Location into its next request URL.
 
     def running(self) -> None:
         """Announce readiness only with the pre-connection security options in force."""
