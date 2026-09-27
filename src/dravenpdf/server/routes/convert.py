@@ -29,6 +29,7 @@ router = APIRouter(prefix="/v1/convert", tags=["convert"], dependencies=[Depends
 
 @router.post("/images-to-pdf", response_class=Response, responses=PDF_RESPONSE)
 async def images_to_pdf(
+    request: Request,
     files: Annotated[list[UploadFile], File(description="Images, one page each, in order.")],
     paper: Annotated[PaperSize | None, Form(description="Fit onto this paper.")] = None,
     landscape: Annotated[bool, Form()] = False,
@@ -36,8 +37,9 @@ async def images_to_pdf(
 ) -> Response:
     images = [await f.read() for f in files]
     doc = await asyncio.to_thread(
-        PdfDocument.from_images, images, paper=paper, landscape=landscape, margin=margin
-    )
+        PdfDocument.from_images, images, paper=paper, landscape=landscape, margin=margin,
+        max_pixels=settings_of(request).max_image_pixels,
+    )  # fmt: skip
     return await pdf_response(doc, "images.pdf")
 
 

@@ -204,3 +204,26 @@ def test_closing_the_iterator_closes_the_pdf(monkeypatch: pytest.MonkeyPatch) ->
     assert closed == []
     images.close()
     assert closed == [True]
+
+
+def test_from_images_pixel_cap() -> None:
+    small, large = image_bytes("PNG", size=(10, 10)), image_bytes("PNG", size=(100, 50))
+
+    assert PdfDocument.from_images([small], max_pixels=100).page_count == 1
+    with pytest.raises(LimitExceededError, match=r"image 2 is 5,000 pixels"):
+        PdfDocument.from_images([small, large], max_pixels=1_000)
+
+
+def test_from_images_pixel_cap_checks_every_tiff_frame() -> None:
+    buffer = io.BytesIO()
+    first, second = Image.new("RGB", (10, 10)), Image.new("RGB", (100, 50))
+    first.save(buffer, "TIFF", save_all=True, append_images=[second])
+
+    assert PdfDocument.from_images([buffer.getvalue()]).page_count == 2
+    with pytest.raises(LimitExceededError, match=r"image 1 is 5,000 pixels"):
+        PdfDocument.from_images([buffer.getvalue()], max_pixels=1_000)
+
+
+def test_from_images_pixel_cap_leaves_unreadable_images_to_img2pdf() -> None:
+    with pytest.raises(PdfOperationError, match="could not convert image"):
+        PdfDocument.from_images([b"not an image"], max_pixels=1_000)

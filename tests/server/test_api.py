@@ -949,3 +949,18 @@ def test_failed_zip_closes_its_generator_in_the_worker_thread() -> None:
         assert closed_in == [threading.current_thread()]
     else:
         pytest.fail("no LimitExceededError")
+
+
+def test_images_to_pdf_pixel_cap(fake: FakeRenderer) -> None:
+    buffer = io.BytesIO()
+    Image.new("RGB", (50, 50)).save(buffer, "PNG")
+    settings = Settings(api_key=API_KEY, max_image_megapixels=0.001)  # 1,000 pixels
+    with make_client(settings, fake) as c:
+        response = c.post(
+            "/v1/convert/images-to-pdf",
+            files={"files": ("a.png", buffer.getvalue(), "image/png")},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "limit_exceeded"

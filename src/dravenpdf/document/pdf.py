@@ -141,11 +141,15 @@ class PdfDocument:
         paper: PaperSize | None = None,
         landscape: bool = False,
         margin: float = 0,
+        max_pixels: int | None = None,
     ) -> PdfDocument:
         """One page per image. Without ``paper``, pages are the images' own size;
-        with it, images are fitted inside ``margin`` (points), keeping aspect ratio."""
+        with it, images are fitted inside ``margin`` (points), keeping aspect ratio.
+        ``max_pixels`` refuses larger images (:class:`LimitExceededError`)."""
         return cls.from_bytes(
-            image_ops.images_to_pdf(images, paper=paper, landscape=landscape, margin=margin)
+            image_ops.images_to_pdf(
+                images, paper=paper, landscape=landscape, margin=margin, max_pixels=max_pixels
+            )
         )
 
     @classmethod

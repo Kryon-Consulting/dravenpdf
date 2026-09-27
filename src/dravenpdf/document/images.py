@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import io
 import logging
+import warnings
 from collections.abc import Generator, Iterable, Sequence
 from typing import Any, Literal
 
 import img2pdf
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from dravenpdf.document._pdfium import LOCK, open_pdf
 from dravenpdf.document.pages import normalize_indices
@@ -45,21 +46,60 @@ _IMG2PDF_ERRORS = (
 logging.getLogger("img2pdf").setLevel(logging.ERROR)
 
 
+# Formats whose frames can each have their own size. Others (GIF, APNG, WebP) report
+# one canvas size for every frame, and seeking through them would decode each frame.
+_FRAMES_WITH_OWN_SIZE = frozenset({"TIFF", "MPO"})
+
+
+def _check_pixels(images: Sequence[bytes], max_pixels: int) -> None:
+    """Refuse images with a frame (img2pdf makes each frame a page) larger than
+    ``max_pixels``, reading only headers."""
+    for number, data in enumerate(images, start=1):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(data)) as image:
+                    sizes = _frame_sizes(image)
+        except Image.DecompressionBombError:
+            raise LimitExceededError(f"image {number} is too large to open") from None
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+            continue  # img2pdf reports unreadable images with its own message
+        for width, height in sizes:
+            if width * height > max_pixels:
+                raise LimitExceededError(
+                    f"image {number} is {width * height:,} pixels; the limit is {max_pixels:,}"
+                )
+
+
+def _frame_sizes(image: Image.Image) -> list[tuple[int, int]]:
+    sizes = [image.size]
+    if image.format in _FRAMES_WITH_OWN_SIZE:
+        for frame in range(1, getattr(image, "n_frames", 1)):
+            image.seek(frame)  # reads the frame's header, not its pixels
+            sizes.append(image.size)
+    return sizes
+
+
 def images_to_pdf(
     images: Sequence[bytes],
     *,
     paper: PaperSize | None = None,
     landscape: bool = False,
     margin: float = 0,
+    max_pixels: int | None = None,
 ) -> bytes:
-    """One page per image (PNG, JPEG, GIF, TIFF, WebP, ...).
+    """One page per image (PNG, JPEG, GIF, TIFF, WebP, ...), and per frame of a
+    multi-frame image.
 
     Without ``paper`` each page is the image's own size. With ``paper`` each image is
     scaled to fit inside the page and its ``margin`` (points), keeping its aspect ratio.
-    JPEG and many PNGs are embedded without re-encoding.
+    JPEG and many PNGs are embedded without re-encoding. ``max_pixels`` refuses any
+    image (or frame) with more pixels (:class:`LimitExceededError`), before decoding.
     """
     if not images:
         raise PdfOperationError("no images given")
+    if max_pixels is not None:
+        _check_pixels(images, max_pixels)
     options: dict[str, Any] = {"rotation": img2pdf.Rotation.ifvalid}
     if paper is not None:
         if margin < 0:
