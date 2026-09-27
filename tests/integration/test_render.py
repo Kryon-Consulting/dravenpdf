@@ -306,7 +306,7 @@ async def test_strict_renders_use_isolated_browsers() -> None:
         for i in range(5):
             await r.from_html(f"<p>{i}</p>")
 
-        assert r.pool.launches == 5
+        assert r.pool.launches == 6  # one per render, plus the spare for the next
         assert r.pool.restarts == 0
 
 
@@ -321,13 +321,15 @@ async def test_recovers_after_browser_crash() -> None:
         doc = await r.from_html("<p>after crash</p>")
 
         assert "after crash" in pdf_text(doc)[0]
-        assert r.pool.launches == 2
+        assert r.pool.launches == 3  # the crashed one, the spare it used, the next spare
 
 
 class _SlowLaunchPool(BrowserPool):
     delay = 0.0
+    launch_calls = 0
 
     async def _launch_browser(self, playwright: Any) -> Any:
+        self.launch_calls += 1
         await asyncio.sleep(self.delay)
         return await super()._launch_browser(playwright)
 
@@ -337,6 +339,9 @@ async def test_deadline_covers_a_slow_browser_launch() -> None:
     async with pool, AsyncRenderer(pool=pool) as r:
         await r.from_html("<p>warm up</p>")
         pool.delay = 3.0
+        # Lose the spare launched during the warm-up, so the next render must launch.
+        spare = await pool._ensure_browser()
+        await spare.browser.close()
         loop = asyncio.get_running_loop()
         started = loop.time()
 
@@ -346,7 +351,8 @@ async def test_deadline_covers_a_slow_browser_launch() -> None:
         assert loop.time() - started < 1.5
         doc = await r.from_html("<p>after</p>")  # reuses the launch that kept going
         assert "after" in pdf_text(doc)[0]
-        assert pool.launches == 2
+        # Start, the warm-up's spare, the slow launch, and the spare "after" started.
+        assert pool.launch_calls == 4
 
 
 # ---------------------------------------------------------------- sync wrapper
