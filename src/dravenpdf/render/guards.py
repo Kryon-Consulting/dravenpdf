@@ -1,11 +1,11 @@
-"""Shared render network policy and Chromium's local-file guard.
+"""Chromium's local-file guard and the render's network policy snapshot.
 
 Every network request is checked by the per-render mitmproxy addon before reaching
-its destination. This module freezes a policy snapshot for that process and keeps
-Playwright's local-file root restriction, which HTTP proxies cannot enforce.
-Chromium redirect chains are observed for reporting. A dedicated browser CDP
-interceptor enforces the per-chain redirect cap while the proxy independently
-checks every network destination.
+its destination (the policy itself is in ``_netpolicy``). This module freezes a
+policy snapshot for that process and keeps Playwright's local-file root restriction,
+which HTTP proxies cannot enforce. Chromium redirect chains are observed for block
+messages; a dedicated browser CDP interceptor (``_redirect_gate``) enforces the
+per-chain redirect cap while the proxy independently checks every network destination.
 
 The DNS check and the upstream connection resolve separately; deployments rendering
 untrusted content should also restrict outbound network traffic.
@@ -21,24 +21,22 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from playwright.async_api import BrowserContext, Page, Route, WebSocket
+from playwright.async_api import BrowserContext, Page, Request, Route, WebSocket
 
 from dravenpdf.errors import BlockedRequestError
 from dravenpdf.render._netpolicy import NetworkPolicy as NetworkPolicy
 from dravenpdf.render._netpolicy import Resolver as Resolver
 from dravenpdf.render._netpolicy import _raise_if, origin_of
 from dravenpdf.render._netpolicy import resolve_host as resolve_host
+from dravenpdf.render._proxy_protocol import ProxyPolicy
 
 if TYPE_CHECKING:
-    from dravenpdf.render._proxy_protocol import ProxyPolicy
     from dravenpdf.render.assets import AssetBundle
     from dravenpdf.render.auth import RenderAuth
 
 logger = logging.getLogger("dravenpdf.render.guards")
 
 BlockPolicy = Literal["fail", "skip"]
-
-MAX_REDIRECTS = 10
 
 
 def _host_port(url: str) -> str | None:
@@ -91,8 +89,6 @@ class RequestGuard:
 
     def proxy_policy(self, credential: str, deadline: float | None) -> ProxyPolicy:
         """Freeze the network policy and response data for one proxy process."""
-        from dravenpdf.render._proxy_protocol import ProxyPolicy
-
         allowed = None
         if self.network.has_allowlist:
             allowed = sorted(self.network.exact) + [
@@ -172,11 +168,9 @@ class RequestGuard:
                 return
         await route.continue_()
 
-    def _observe_request(self, request: object) -> None:
-        """Record chains past the public ten-redirect limit."""
-        from playwright.async_api import Request
-
-        assert isinstance(request, Request)
+    def _observe_request(self, request: Request) -> None:
+        """Remember where each origin's requests came from, for block messages.
+        The redirect cap itself is enforced by RedirectGate."""
         parent = request.redirected_from
         origin = origin_of(request.url)
         if origin is not None:
@@ -185,12 +179,6 @@ class RequestGuard:
                 self._observed_urls[target] = request.url
         if parent is not None and origin is not None:
             self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
-        hops = 0
-        while parent is not None:
-            hops += 1
-            parent = parent.redirected_from
-        if hops > MAX_REDIRECTS:
-            self._block(request.url, f"more than {MAX_REDIRECTS} redirects")
 
     def add_proxy_blocks(self, events: list[tuple[str, str]]) -> None:
         for target, reason in events:

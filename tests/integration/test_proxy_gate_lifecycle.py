@@ -448,3 +448,30 @@ async def test_redirect_session_closes_before_browser_slot_release(
         await renderer.from_html("<p>ready</p>")
 
     assert events.index("redirect close") < events.index("release")
+
+
+@pytest.mark.browser
+async def test_redirect_overflow_is_reported_once() -> None:
+    class Redirects(BaseHTTPRequestHandler):
+        def log_message(self, *_args: object) -> None:
+            pass
+
+        def do_GET(self) -> None:
+            hop = int(parse_qs(urlsplit(self.path).query)["n"][0])
+            self.send_response(302)
+            self.send_header("Location", f"/chain?n={hop + 1}")
+            self.end_headers()
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Redirects)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with AsyncRenderer(allow_private_network=True) as renderer:
+            with pytest.raises(BlockedRequestError) as blocked:
+                await renderer.from_url(f"http://127.0.0.1:{httpd.server_port}/chain?n=0")
+        assert "more than 10 redirects" in str(blocked.value)
+        assert "more)" not in str(blocked.value)
+    finally:
+        httpd.shutdown()
+        thread.join()
+        httpd.server_close()

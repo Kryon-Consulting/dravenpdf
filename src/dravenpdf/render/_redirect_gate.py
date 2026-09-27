@@ -14,7 +14,9 @@ from typing import Any
 from playwright.async_api import BrowserContext, CDPSession
 
 from dravenpdf.errors import RenderError
-from dravenpdf.render.guards import MAX_REDIRECTS
+
+MAX_REDIRECTS = 10
+"""Chromium's own limit; one more hop is failed here before it is sent."""
 
 
 class RedirectGate:
