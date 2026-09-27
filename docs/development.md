@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - Chromium, installed through Playwright (one time): `uv run playwright install --with-deps chromium`.
   To use a different Chromium binary (for example one preinstalled in a container
@@ -50,10 +50,12 @@ A `Makefile` wraps these (`make lint`, `make test`, `make serve`, `make docker`)
 - `tests/unit/test_cli.py` and `tests/integration/test_cli_render.py` drive the CLI
   through Typer's `CliRunner`.
 
-Tests must not hit the public internet. URL rendering tests use a local HTTP
-server fixture (`server` in `tests/conftest.py`) and the `local_renderer` fixture,
-whose allowlist is `["localhost"]`; `127.0.0.1` URLs to the same server stay
-blocked, which is how redirect and SSRF tests get a "forbidden" target.
+Tests must not hit the public internet. URL rendering tests use local HTTP and
+HTTPS server fixtures. `local_renderer` allows `localhost`; `127.0.0.1` to the
+same server stays blocked where redirect and SSRF tests need a forbidden target.
+The HTTPS cookie tests compare destination wire records from guarded renders with
+an unguarded Chromium control. The test fixture's upstream CA is trusted only by
+that test proxy; production proxies validate against their normal trust store.
 
 ## Conventions
 

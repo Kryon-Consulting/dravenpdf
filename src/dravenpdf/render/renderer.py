@@ -52,9 +52,10 @@ class AsyncRenderer:
     """Renders HTML to PDF. Use as an async context manager, or call start()/close().
 
     Args:
-        max_concurrency: renders running at once (each is a Chromium page).
+        max_concurrency: renders running at once (each has its own Chromium process).
         max_queue: renders allowed to wait for a slot before PoolExhaustedError.
-        recycle_after: replace Chromium after this many renders.
+        recycle_after: shared-pool browser recycle setting; strict renders use a
+            dedicated process regardless of this value.
         allowed_hosts: only these hosts may be loaded (see RequestGuard).
         allow_private_network: allow private/loopback addresses. Trusted input only.
         on_blocked: ``"fail"`` raises BlockedRequestError when any request was

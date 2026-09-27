@@ -37,8 +37,13 @@ pdf/
 │   ├── render/
 │   │   ├── renderer.py         # AsyncRenderer
 │   │   ├── sync.py             # Renderer (sync wrapper)
-│   │   ├── pool.py             # BrowserPool: launch, concurrency, restart
-│   │   ├── guards.py           # request filtering (SSRF), per-request timeouts
+│   │   ├── pool.py             # BrowserPool: concurrency, Chromium and CA lifecycle
+│   │   ├── guards.py           # shared network policy and local-file guard
+│   │   ├── _proxy_ca.py        # temporary CA and scoped Chromium trust
+│   │   ├── _proxy_gate.py      # per-render mitmdump lifecycle and control channel
+│   │   ├── _proxy_addon.py     # pre-forward request checks and header injection
+│   │   ├── _proxy_protocol.py  # private policy and event format
+│   │   ├── _redirect_gate.py   # browser-wide CDP redirect bound
 │   │   ├── assets.py           # in-memory asset bundles for from_html(assets=...)
 │   │   ├── report.py           # render reports and strict mode
 │   │   ├── waits.py            # fonts ready, lazy images, custom ready signal
@@ -99,27 +104,25 @@ DravenPdfError
 ```
 
 ### `render/`
-- **`pool.py` – `BrowserPool`**: owns one Playwright instance and one Chromium
-  process (binary from `executable_path` / `$DRAVENPDF_CHROMIUM_PATH`, else
-  Playwright's download). An `asyncio.Semaphore` caps concurrent renders (`max_concurrency`) and
-  a bounded wait (`max_queue`) raises `PoolExhaustedError` when too many renders
-  are waiting. It relaunches Chromium if it disconnects, and can recycle the
-  browser after N renders to limit memory growth. A launch runs as one shared
-  background task that callers only wait on (`asyncio.shield`): a render whose
-  deadline passes stops waiting, but the launch finishes and serves the next render,
-  so no half-launched Chromium is leaked and concurrent callers never launch twice.
-  Context creation is shielded the same way; a context that arrives after its caller
-  gave up is closed.
+- **`pool.py` – `BrowserPool`**: owns Playwright, concurrency slots and a temporary
+  proxy CA. Strict renders lease a dedicated Chromium process and fresh context so
+  the browser-wide redirect observer cannot affect another render. The binary comes
+  from `executable_path` / `$DRAVENPDF_CHROMIUM_PATH`, else Playwright's download.
+  An `asyncio.Semaphore` caps concurrent renders (`max_concurrency`); a bounded wait
+  (`max_queue`) raises `PoolExhaustedError`. Browser launch and context creation are
+  shielded so cancellation closes late contexts and does not leak partial startup.
+  Dedicated processes add startup time and memory per concurrent render.
 - **`renderer.py` – `AsyncRenderer`**: `from_html`, `from_url`, `from_file`,
   `from_template`. One deadline (`timeout_ms`) covers the whole call: the wait for a
-  slot, launching Chromium if needed, creating the context and page, loading, waiting
-  and printing. Each call: take a pool slot → create a new context →
-  install guards → load content → run waits → `page.pdf(...)` → close the
-  context → return a `PdfDocument`.
+  slot, proxy startup, launching Chromium, creating the context and page, loading,
+  waiting and printing. Each call: start the proxy → lease an isolated browser and
+  proxied context → install the local-file guard and redirect observer → load, wait
+  and print → close the context and observer → close the proxy → return a
+  `PdfDocument`. A late context cleanup keeps its proxy alive until cleanup finishes.
 - **`assets.py`**: `AssetBundle` for `from_html(..., assets=...)`. The page loads from
-  `https://bundle.dravenpdf.invalid/` (a reserved domain that can't resolve); the guard
-  answers that origin from memory before any other check (`AssetBundle.fulfill`), so
-  bundle requests never reach the network. Paths are validated with `check_path`.
+  `https://bundle.dravenpdf.invalid/` (a reserved domain that can't resolve); the
+  proxy addon answers owned URLs from memory with the bundle's 200/404 behavior,
+  before any upstream connection. Paths are validated with `check_path`.
 - **`report.py`**: `ReportCollector` listens to the page's `response`, `requestfailed`,
   `pageerror` and `console` events and builds the `RenderReport` attached to each
   rendered document (deduplicated: a 404 stylesheet that Chromium also aborts is listed
@@ -129,29 +132,39 @@ DravenPdfError
   validation and `SecretStr` values (the IndexedDB snapshot is a `Secret`). Every
   `from_*` method takes it. The renderer passes localStorage and IndexedDB as the
   context's `storage_state`, adds cookies with `add_cookies` before any page exists,
-  and hands the headers to the guard.
+  and hands exact-origin headers to the proxy policy.
 - **`_redact.py`**: `safe_message()` strips Playwright's call log (which lists request
   headers, including credentials) from anything logged or raised.
-- **`guards.py`**: a `context.route("**/*")` handler. It allows `data:`/`blob:`/`about:`,
-  and `http(s)` only when the host resolves to a public IP (or is on the
-  allowlist). It blocks private, loopback, link-local, CGNAT and multicast addresses,
-  including the cloud metadata IP `169.254.169.254`. `file://` is blocked except
-  inside `file_root`, which `from_file` sets to the rendered file's folder.
-  Playwright does not call route handlers for redirect hops, so the guard fetches
-  HTTP(S) requests itself (`route.fetch(max_redirects=0)`), checks each redirect
-  target, and fulfills the browser with the final response. Headers are rebuilt for
-  every hop (`hop_headers`): exactly the browser's `Cookie` header on the first hop
-  (empty if it sent none, or `route.fetch` would add stored cookies without SameSite;
-  the jar supplies cookies for later URLs), `Authorization` dropped once a redirect leaves
-  the original origin, and `RenderAuth` headers added only for their exact origin. If that fetch fails, the
-  request is aborted as a network error (never left unanswered, which would hold the
-  render until its deadline). WebSockets are routed separately
-  (`context.route_web_socket`) and checked with the same host rules; blocked ones are
-  closed before connecting. Blocked requests are
-  aborted and recorded; with `on_blocked="fail"` (default) the render then raises
-  `BlockedRequestError`, with `"skip"` it renders without them.
-  Known limit: DNS is resolved separately for the check and the connection
-  (DNS rebinding), so production deployments should also restrict egress.
+- **`guards.py`**: `NetworkPolicy` supplies the shared SSRF rule: HTTP(S) hosts must
+  resolve to public IPs or be explicitly allowlisted. It blocks private, loopback,
+  link-local, CGNAT and multicast addresses, including `169.254.169.254`. The
+  browser route handles only `file://`, restricted to `file_root` for local inputs;
+  `data:`, `blob:` and `about:` remain browser-local. With `on_blocked="fail"`
+  (default), a recorded block raises `BlockedRequestError`; `"skip"` renders without
+  it. DNS is resolved separately for the policy check and upstream connection, so
+  production deployments should also restrict egress against DNS rebinding.
+- **`_proxy_ca.py`, `_proxy_gate.py`, `_proxy_addon.py`**: one loopback mitmdump
+  process per render starts before its browser context. A random proxy credential
+  and private policy/control files isolate renders. The context has a mandatory proxy
+  with loopback bypass disabled. The addon checks CONNECT and each HTTP request
+  header, including requests in reused HTTPS tunnels, before upstream bytes. It
+  rejects mismatched CONNECT/inner authorities, raw TCP/UDP and unsupported schemes.
+  HTTP(S) and WS(S) handshakes use this path, including popups, frames and workers.
+  The addon adds configured headers only at their exact origin and leaves Chromium's
+  `Cookie` untouched on every hop. A failed proxy, control channel or policy hook
+  fails closed and surfaces as a render error or blocked request. Proxy events feed
+  the render report without including credential values. Events for blocked traffic
+  carry an origin, so simultaneous blocked URLs on that origin can be attributed to
+  the most recently observed URL in diagnostics; the proxy still blocks each one.
+- **`_redirect_gate.py`**: a browser-root CDP observer enforces the ten-redirect
+  chain bound and reports blocks. The proxy remains the network security boundary;
+  every hop is checked there even if Playwright/CDP observation fails.
+- **TLS trust**: the pool creates a temporary CA in a private directory and launches
+  Chromium with that CA's SPKI hash trusted only for that browser. The proxy validates
+  upstream certificates (`ssl_insecure=false`); no system trust store or blanket
+  browser HTTPS-error setting is changed. The CA is removed when the pool closes.
+  Interception is incompatible with sites that require end-to-end certificate
+  pinning or client certificates; HTTP/3/QUIC is not supported by this proxy path.
 - **`waits.py`**: waits for `document.fonts.ready`, scrolls to trigger lazy images,
   waits for all `<img>` elements to load, and optionally waits for
   `window.__DRAVENPDF_READY__ === true` (for pages that render with JS).

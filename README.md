@@ -25,7 +25,7 @@ and compress the PDFs, convert between PDFs and images, and extract text.
 - **Stamps and watermarks** from text, images or HTML
 - **Conversion:** images → PDF, PDF → PNG/JPEG, text extraction
 - **HTTP service** (FastAPI) with API key auth, concurrency limits and Prometheus metrics
-- **Safe by default:** a fresh browser context per render, SSRF protection, sandboxed templates
+- **Safe by default:** a dedicated browser process and network proxy per render, SSRF protection, sandboxed templates
 
 - **Passwords:** open protected PDFs, encrypt with AES-256 and permissions, decrypt
 - **Forms:** list fields, fill text, checkboxes, radio buttons and dropdowns, flatten
@@ -36,11 +36,23 @@ Not included: PDF/A, EU qualified signatures, creating fillable forms from HTML.
 
 ## Installation
 
+Requires Python 3.12 or newer; Python 3.11 support ended with the strict network
+gate. Rendering starts a local mitmproxy process for each call, so expect extra
+startup time and memory compared with a shared browser.
+
 ```bash
 pip install dravenpdf                 # library + CLI
 pip install "dravenpdf[server]"       # + HTTP service
 playwright install chromium           # one-time browser download
 ```
+
+The proxy checks each network request and redirect before forwarding. Chromium
+chooses cookies on every hop, and configured headers stay on their exact origin.
+Upstream HTTPS certificates are validated; the proxy CA is trusted only by the
+renderer browser and removed when its pool closes. Sites that require certificate
+pinning, client certificates or HTTP/3/QUIC cannot use this interception path.
+Proxy or internal policy-hook failures stop the render rather than falling back to
+direct access. A denied URL follows the configured `on_blocked` behavior.
 
 ## Quick start
 

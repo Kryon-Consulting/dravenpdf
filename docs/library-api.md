@@ -87,7 +87,7 @@ the page and of what it loads (decision D11):
 | Credential | Takes effect |
 |---|---|
 | `headers` | On requests to that exact origin, from any page (images, fonts, API calls, frames) |
-| `cookies` | Where Chromium sends them. From a page on another site (`from_html`'s `about:blank`, a local file, a bundle, or a web page on another site) only `SameSite=None; Secure` cookies are sent |
+| `cookies` | Wherever Chromium's cookie rules send them, on initial requests and every redirect hop. Page source, SameSite, Secure and browser third-party-cookie policy all matter |
 | `localStorage` / `indexedDB` | On pages of that origin: the page itself with `from_url`, or a page it navigates to. Not in a page on another origin; Chromium partitions storage for embedded frames |
 
 So for HTML, files, templates and bundles, headers are the dependable way to reach
@@ -97,25 +97,25 @@ loads.
 - **Cookies** (`url`, or `domain` + `path`; `expires`, `http_only`, `secure`,
   `same_site`) and **storage state** (cookies plus `localStorage` and `indexedDB` per
   origin, in Playwright's own format: `context.storage_state(indexed_db=True)`) go into
-  the render's fresh browser context before the first navigation. The browser applies
-  its normal cookie rules, SameSite included: the guard passes on exactly the cookies
-  Chromium chose for a request (on redirect hops after the first, the stored cookies
-  for the new URL, without SameSite).
+  the render's fresh browser context before the first navigation. Chromium applies
+  its cookie rules, SameSite included, on every request and redirect hop. The proxy
+  leaves the resulting `Cookie` header untouched, including when it is absent.
 - **IndexedDB** snapshots are kept whole and opaque (a `Secret`, masked like the other
   values), limited to the 1 MiB total, and restored before the first navigation, so a
   login an app keeps in IndexedDB works on the first page load.
 - **Headers** are keyed by exact origin (scheme, host, port; default ports optional).
-  The request guard adds them to every request and redirect hop for that origin only:
+  The proxy adds them to every request and redirect hop for that origin only:
   images, fonts and API calls on the same origin get them; other origins don't.
-- **Redirects:** headers are rebuilt per hop. After the first hop the cookie jar
-  supplies the cookies for each URL, `Authorization` is dropped once a redirect leaves
-  the original origin (also when the page's own script set it), and a second origin
-  only receives headers configured for it. Every hop still passes the SSRF checks:
-  configuring headers for an origin does not allowlist it.
-- **Isolation:** every render gets its own context; a later render starts logged out.
+- **Redirects:** Chromium makes each next-hop request and chooses its cookies.
+  Chromium drops an origin-bound `Authorization` header when a redirect leaves its
+  origin; a second origin only receives headers configured for it. The proxy checks
+  every hop before forwarding it. Configuring headers for an origin does not
+  allowlist it.
+- **Isolation:** every render gets its own Chromium process, context and proxy; a
+  later render starts logged out.
 - **Secrets:** all values are `SecretStr`, masked in `repr`, `str`, logs and JSON.
   Validation errors don't show them (use `errors(include_input=False)` if you inspect
-  `ValidationError.errors()`). The guard strips Playwright's call log, which lists
+  `ValidationError.errors()`). Error handling strips Playwright's call log, which lists
   request headers, from anything it logs or raises.
 - `Cookie`, `Host`, `Content-Length` and connection headers can't be configured; use
   `cookies` / `storage_state` for cookies. Configured headers aren't added to

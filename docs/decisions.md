@@ -50,24 +50,25 @@ metadata IPs; optional host allowlist). Jinja2 runs sandboxed with autoescaping.
 ## D11 – Page credentials are per render, per exact origin
 `RenderAuth` is separate from `RenderOptions` (layout) and from the service's own
 `X-API-Key`. Cookies and storage state use the browser's own mechanisms (installed in
-the fresh context before the first navigation) rather than a `Cookie` header, so the
-browser's cookie rules apply. Extra headers are added by the guard per hop and only for
-their exact origin; they are rebuilt on every redirect hop, `Authorization` is dropped
-when a redirect leaves the original origin, and cookies after the first hop come from
-the jar for the new URL. Values are `SecretStr` and Playwright's call logs (which list
-headers) are stripped from logs and errors.
+the fresh context before the first navigation). Chromium selects the `Cookie` header
+on every request and redirect hop; the proxy does not construct or replace it. The
+per-render proxy checks each request before forwarding and adds configured headers
+only for the exact scheme, host and port. Chromium's redirect handling drops an
+origin-bound `Authorization` header when a redirect leaves its origin; headers
+configured for the destination origin can then be added there. Credential values
+are masked by Pydantic secrets, and Playwright's call logs (which list headers)
+are stripped from logs and errors.
 
 **Which sources, and where each credential takes effect.** Every render source takes
 `auth`: `from_url`, `from_html` (with or without `base_url`), `from_file`,
 `from_template` and asset bundles, in the library, CLI (`--auth FILE`) and HTTP API.
 The rules above don't change; what differs is the page's own origin:
 - *Headers* reach requests to their exact origin from any page.
-- *Cookies* go where Chromium sends them. A page on another site (`about:blank` for
-  `from_html`, `file://`, the bundle origin, or a web page on another site) only sends
-  `SameSite=None; Secure` cookies with its requests. The guard's first hop passes on
-  exactly Chromium's `Cookie` header, because `route.fetch` would otherwise add stored
-  cookies without SameSite. Redirect hops after the first still take cookies from the
-  jar for the new URL, without SameSite.
+- *Cookies* go where Chromium sends them, including on redirects. Their presence
+  depends on the page source, destination, SameSite setting, Secure flag and browser
+  third-party-cookie policy. HTTPS wire tests compare guarded requests with an
+  unguarded Chromium control across every render source and both third-party-cookie
+  settings. In the blocked cross-site image case, both omit the `Cookie` header.
 - *localStorage and IndexedDB* (IndexedDB from `storage_state(indexed_db=True)`,
   Playwright 1.51+) belong to their origin: a page on that origin sees them (the page
   itself for `from_url`, or one the page navigates to). A page on another origin

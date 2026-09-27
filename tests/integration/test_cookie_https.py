@@ -338,6 +338,8 @@ async def test_guarded_cross_site_image_cookies_match_chromium(
     assert guarded.headers.get("cookie", "") == baseline_cookie
     if blocked:
         assert baseline_cookie == ""
+        assert "cookie" not in baseline.headers
+        assert "cookie" not in guarded.headers
     else:
         assert baseline_cookie == "none=value"
 

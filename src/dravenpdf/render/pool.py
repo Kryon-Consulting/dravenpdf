@@ -1,4 +1,4 @@
-"""One shared Chromium process with a cap on concurrent renders."""
+"""Chromium lifecycle, scoped proxy CA and a cap on concurrent renders."""
 
 from __future__ import annotations
 
@@ -39,13 +39,13 @@ class _Slot:
 
 
 class BrowserPool:
-    """Owns Playwright and a Chromium process, and hands out fresh browser contexts.
+    """Owns Playwright and hands out fresh browser contexts.
 
     - At most ``max_concurrency`` contexts are open at once. Up to ``max_queue``
       more callers may wait for one; beyond that :class:`PoolExhaustedError` is raised.
     - If Chromium disconnects (crash, OOM kill), the next render launches a new one.
-    - After ``recycle_after`` renders the browser is replaced, to cap memory growth.
-      Renders already running on the old browser finish first.
+    - Strict renders use an isolated Chromium process per context. Shared browser
+      leases, when used, recycle after ``recycle_after`` renders.
 
     ``executable_path`` defaults to the ``DRAVENPDF_CHROMIUM_PATH`` environment
     variable, and otherwise to the Chromium that ``playwright install`` downloaded.

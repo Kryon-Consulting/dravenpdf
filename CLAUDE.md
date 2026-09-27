@@ -55,7 +55,7 @@ Full reasoning is in `docs/decisions.md`.
 
 ## Conventions
 
-- Python **3.11+**, `src/` layout, fully type-hinted (`mypy --strict` for `src/`).
+- Python **3.12+**, `src/` layout, fully type-hinted (`mypy --strict` for `src/`).
 - Packaging and environments: **uv** with the **hatchling** build backend.
 - Lint and format: **ruff** (`ruff check`, `ruff format`).
 - Tests: **pytest** + `pytest-asyncio`. Tests that launch Chromium are marked
@@ -76,19 +76,23 @@ Full reasoning is in `docs/decisions.md`.
 - CLI and HTTP page arguments are 1-based strings; the Python API is 0-based.
 - Raise the exceptions from `dravenpdf.errors`, not bare `Exception`s. The
   server maps them to HTTP status codes in one place.
-- Every Playwright render uses a **new browser context** and must go through the
-  request guard in `render/guards.py` (SSRF protection). Never bypass it.
+- Every Playwright render uses a **dedicated Chromium process**, fresh context and
+  per-render proxy. Start `ProxyGate` before creating the context and close the
+  context before the proxy. The addon applies `NetworkPolicy` to every HTTP(S) and
+  WS(S) request before forwarding, including redirect hops and popup navigation.
+  Keep `RequestGuard` for local-file limits and block/report collection.
 - Never `await` a Chromium launch or `new_context()` directly from a render: go
   through `BrowserPool._ensure_browser()` / `_new_context()`, which shield them so a
   render deadline can't leak a half-created browser or context.
 - Build many-part outputs lazily (`PdfDocument.iter_split`) and don't keep earlier
   parts referenced; note that `enumerate()` holds its previous item (see the split route).
 - Credentials (`RenderAuth`) must never reach logs, exceptions, reports, metrics or
-  response headers. Keep values as `SecretStr` until the moment they're handed to
-  Playwright, and pass any Playwright error text through `render/_redact.safe_message`
-  first: its call log lists request headers. Per-hop header rules live in
-  `RequestGuard.hop_headers`; redirect tests in `tests/integration/test_auth.py` fail if
-  credentials follow a redirect to another origin.
+  response headers. Keep values as `SecretStr` until they're handed to Playwright
+  or written to the private per-render proxy policy. Pass any Playwright error text
+  through `render/_redact.safe_message` first: its call log lists request headers.
+  Exact-origin header rules live in
+  `_proxy_addon.py`; HTTPS wire tests in `tests/integration/test_cookie_https.py`
+  compare every hop's cookies and headers against Chromium without the guard.
 - Signed documents: `PdfDocument.to_bytes()` must keep returning the exact source bytes
   of an unmodified document. Every operation that writes a new file must start from
   `_rewritable()` (which removes signatures, and warns, before the operation runs, so
@@ -99,15 +103,13 @@ Full reasoning is in `docs/decisions.md`.
 - Passwords and key passphrases follow the same rules as `RenderAuth` credentials:
   `SecretStr` where stored, never in messages, and `from None` when re-raising errors
   that might contain them.
-- Every guard route handler must answer the browser on every path (fulfill, continue
-  or abort), including when its own fetch fails; an unanswered route hangs the render.
-  New kinds of browser traffic (like WebSockets) need their own guard route.
-- The guard's first hop must pass Chromium's own `Cookie` header, empty if there is
-  none: `route.fetch` without one adds every stored cookie for the URL, ignoring
-  SameSite (a test in `tests/integration/test_auth.py` catches this).
-- Don't replace the guard's `route.fetch(max_redirects=0)` loop with
-  `route.continue_()`: Playwright doesn't route redirect hops, so a public URL
-  could redirect Chromium to an internal one unchecked (tests cover this).
+- The proxy must leave Chromium's `Cookie` header untouched, including its absence.
+  Never create cookies from the jar in the addon. Check CONNECT and every decrypted
+  request header before forwarding; deny on policy, control-channel or hook errors.
+  Keep upstream TLS verification and browser-scoped proxy CA trust enabled. Do not
+  add a direct-network fallback or bypass loopback traffic.
+- The Playwright route handles local files only. The proxy handles network traffic;
+  CDP enforces the ten-redirect limit but is not the SSRF security boundary.
 
 ## CI
 
