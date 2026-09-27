@@ -9,8 +9,9 @@ from dravenpdf.options import RenderOptions
 READY_FLAG = "__DRAVENPDF_READY__"
 
 # Load lazy images now instead of when they scroll into view, then wait for every
-# image to finish (or fail). Broken images must not block the render.
-_LOAD_IMAGES_JS = """
+# image to finish (or fail), then for fonts. Broken images must not block the render.
+# One evaluate, so one round trip to the browser.
+_ASSETS_READY_JS = """
 async () => {
   for (const img of document.querySelectorAll('img[loading="lazy"]')) img.loading = 'eager';
   window.scrollTo(0, document.body ? document.body.scrollHeight : 0);
@@ -20,11 +21,10 @@ async () => {
       img.addEventListener('load', done);
       img.addEventListener('error', done);
     })));
+  await document.fonts.ready;  // after the images: they can pull in more fonts
   return true;
 }
 """
-
-_FONTS_READY_JS = "async () => { await document.fonts.ready; return true; }"
 
 
 async def wait_until_ready(page: Page, options: RenderOptions) -> None:
@@ -35,5 +35,4 @@ async def wait_until_ready(page: Page, options: RenderOptions) -> None:
         await page.wait_for_function(f"() => window.{READY_FLAG} === true")
     if options.wait_for_expression is not None:
         await page.wait_for_function(options.wait_for_expression)
-    await page.evaluate(_LOAD_IMAGES_JS)
-    await page.evaluate(_FONTS_READY_JS)
+    await page.evaluate(_ASSETS_READY_JS)

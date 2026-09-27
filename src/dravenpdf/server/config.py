@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     max_image_megapixels: float = Field(default=40, gt=0)
     # Comma-separated; empty/unset means "any public host".
     allowed_hosts: str = ""
-    browser_recycle_after: int = Field(default=500, ge=1)
     log_level: str = "INFO"
     # Signing: {"name": {"pkcs12": "/keys/x.p12", "password_file": "/run/secrets/x"}}.
     # Keys stay on the server; requests refer to them by name.

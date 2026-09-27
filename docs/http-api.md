@@ -199,7 +199,6 @@ lives in `src/dravenpdf/server/errors.py`.
 | `DRAVENPDF_MAX_OUTPUT_MB` | `100` | Content limit for ZIP responses and for all images from `pdf-to-images` |
 | `DRAVENPDF_MAX_IMAGE_MEGAPIXELS` | `40` | Largest page `pdf-to-images` renders (A4 at 600 dpi is 35) |
 | `DRAVENPDF_ALLOWED_HOSTS` | – | Comma-separated host allowlist for URLs and sub-resources (`*.example.com` allowed). Unset = any public host |
-| `DRAVENPDF_BROWSER_RECYCLE_AFTER` | `500` | Restart Chromium after N renders |
 | `DRAVENPDF_LOG_LEVEL` | `INFO` | |
 | `DRAVENPDF_CHROMIUM_PATH` | – | Use this Chromium binary instead of Playwright's |
 | `DRAVENPDF_WORKERS` | `1` | Docker image only: worker processes |

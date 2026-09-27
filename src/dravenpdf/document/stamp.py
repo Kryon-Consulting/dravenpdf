@@ -18,6 +18,7 @@ from typing import Literal, get_args
 import pikepdf
 from PIL import Image, UnidentifiedImageError
 
+from dravenpdf.document.pages import normalize_indices
 from dravenpdf.errors import PdfOperationError
 
 Position = Literal[
@@ -71,6 +72,12 @@ def _geometry(page: pikepdf.Page) -> _Geometry:
     return _Geometry(w, h, (1, 0, 0, 1, x0, y0))
 
 
+def displayed_size(page: pikepdf.Page) -> tuple[float, float]:
+    """(width, height) of ``page`` in points as a viewer shows it (rotation applied)."""
+    geometry = _geometry(page)
+    return geometry.width, geometry.height
+
+
 def _num(value: float) -> str:
     text = f"{value:.4f}".rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
@@ -84,12 +91,7 @@ def target_pages(pdf: pikepdf.Pdf, pages: Iterable[int] | None) -> list[int]:
     count = len(pdf.pages)
     if pages is None:
         return list(range(count))
-    result = []
-    for index in pages:
-        if not -count <= index < count:
-            raise PdfOperationError(f"page index {index} is out of range for {count} pages")
-        result.append(index % count)
-    return sorted(set(result))
+    return sorted(set(normalize_indices(pages, count)))
 
 
 # ---------------------------------------------------------------- placement

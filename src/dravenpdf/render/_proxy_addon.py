@@ -75,6 +75,8 @@ class ProxyAddon:
         )
         self.tunnels: dict[str, tuple[str, int]] = {}
         self.authorized: set[str] = set()
+        token = base64.b64encode(f"dravenpdf:{policy.credential}".encode()).decode()
+        self._expected_auth = f"Basic {token}"
         self.control_alive = True
         # A render-wide budget is conservative, but does not depend on guessing
         # how Chromium will resolve Location into its next request URL.
@@ -127,49 +129,52 @@ class ProxyAddon:
         with suppress(BaseException):
             self._event(kind, target, reason)
 
+    def _deny_for(self, flow: http.HTTPFlow, target: str, exc: BaseException) -> None:
+        """Answer ``flow`` with the denial that fits ``exc``, and report it."""
+        if isinstance(exc, BlockedRequestError | CredentialRejected | PolicyViolation):
+            reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
+            self._deny(flow, "blocked", target, reason)
+        elif isinstance(exc, DeadlineExpired):
+            self._deny(flow, "fatal", target, "deadline")
+        else:
+            self._deny(flow, "fatal", target, "proxy failure")
+
     def _check_credential(self, flow: http.HTTPFlow) -> None:
         supplied = flow.request.headers.pop("Proxy-Authorization", "")
         if flow.client_conn.id in self.authorized:
             return
-        token = base64.b64encode(f"dravenpdf:{self.policy.credential}".encode()).decode()
-        if not hmac.compare_digest(supplied, f"Basic {token}"):
+        if not hmac.compare_digest(supplied, self._expected_auth):
             raise CredentialRejected
         self.authorized.add(flow.client_conn.id)
+
+    def _preflight(self, flow: http.HTTPFlow) -> None:
+        """Checks every flow passes first: control channel, transport, deadline, credential."""
+        self._check_control()
+        if flow.client_conn.transport_protocol != "tcp":
+            raise PolicyViolation("unsupported transport")
+        if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
+            raise DeadlineExpired("deadline")
+        self._check_credential(flow)
 
     async def http_connect(self, flow: http.HTTPFlow) -> None:
         target = "unknown"
         try:
             target = self._target(flow, connect=True)
-            self._check_control()
-            if flow.client_conn.transport_protocol != "tcp":
-                raise PolicyViolation("unsupported transport")
-            if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
-                raise DeadlineExpired("deadline")
-            self._check_credential(flow)
+            self._preflight(flow)
             host, port = _authority(flow.request.authority)
             if (flow.request.host.lower().rstrip("."), flow.request.port) != (host, port):
                 raise PolicyViolation("CONNECT authority mismatch")
             await self.network.check(f"https://{flow.request.authority}/")
             self.tunnels[flow.client_conn.id] = (host, port)
-        except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
-            reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
-            self._deny(flow, "blocked", target, reason)
-        except DeadlineExpired:
-            self._deny(flow, "fatal", target, "deadline")
-        except BaseException:
-            self._deny(flow, "fatal", target, "proxy failure")
+        except BaseException as exc:
+            self._deny_for(flow, target, exc)
 
     async def requestheaders(self, flow: http.HTTPFlow) -> None:
         target = "unknown"
         try:
             target = self._target(flow)
-            self._check_control()
+            self._preflight(flow)
             request = flow.request
-            if flow.client_conn.transport_protocol != "tcp":
-                raise PolicyViolation("unsupported transport")
-            if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
-                raise DeadlineExpired("deadline")
-            self._check_credential(flow)
             if request.scheme not in ("http", "https"):
                 raise PolicyViolation("unsupported scheme")
             default_port = 80 if request.scheme == "http" else 443
@@ -190,6 +195,12 @@ class ProxyAddon:
             if url == "http://proxy.dravenpdf.invalid/__ready":
                 flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
                 return
+            if url.startswith("http://proxy.dravenpdf.invalid/"):
+                # Anything else on the control host (Chromium fetches the warm-up
+                # page's favicon, sometimes before the page closes): a local 404.
+                # Reporting it as a block would fail a render that loaded nothing.
+                flow.response = http.Response.make(404, b"", {"Cache-Control": "no-store"})
+                return
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
                 found = self.bundle.lookup(url)
@@ -206,13 +217,8 @@ class ProxyAddon:
             for name, value in self.policy.headers.get(origin_of(url) or "", {}).items():
                 if name.lower() != "cookie":
                     request.headers[name] = value
-        except (BlockedRequestError, CredentialRejected, PolicyViolation) as exc:
-            reason = "credential" if isinstance(exc, CredentialRejected) else "policy"
-            self._deny(flow, "blocked", target, reason)
-        except DeadlineExpired:
-            self._deny(flow, "fatal", target, "deadline")
-        except BaseException:
-            self._deny(flow, "fatal", target, "proxy failure")
+        except BaseException as exc:
+            self._deny_for(flow, target, exc)
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
         # The WebSocket handshake has already passed requestheaders.

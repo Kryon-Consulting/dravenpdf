@@ -44,8 +44,10 @@ class BrowserPool:
     - At most ``max_concurrency`` contexts are open at once. Up to ``max_queue``
       more callers may wait for one; beyond that :class:`PoolExhaustedError` is raised.
     - If Chromium disconnects (crash, OOM kill), the next render launches a new one.
-    - Strict renders use an isolated Chromium process per context. Shared browser
-      leases, when used, recycle after ``recycle_after`` renders.
+    - Strict renders use an isolated Chromium process per context; the next one is
+      launched in the background as soon as a browser is taken, so renders don't
+      wait for Chromium to start. Shared browser leases, when used, recycle after
+      ``recycle_after`` renders.
 
     ``executable_path`` defaults to the ``DRAVENPDF_CHROMIUM_PATH`` environment
     variable, and otherwise to the Chromium that ``playwright install`` downloaded.
@@ -171,10 +173,24 @@ class BrowserPool:
                     self.restarts += 1
                 self._current = None
                 self._retire(slot)
-            task = asyncio.get_running_loop().create_task(self._launch())
-            task.add_done_callback(self._launch_done)
-            self._launching = task
+            self._start_launch()
+        assert self._launching is not None
         return await asyncio.shield(self._launching)
+
+    def _start_launch(self) -> None:
+        task = asyncio.get_running_loop().create_task(self._launch())
+        task.add_done_callback(self._launch_done)
+        self._launching = task
+
+    def _launch_spare(self) -> None:
+        """Start launching the next browser now, in the background.
+
+        An isolated lease retires its browser, so without this every render after the
+        first would wait for a Chromium launch. The spare is ready (or on its way)
+        when the next render asks for one.
+        """
+        if self._playwright is not None and self._current is None and self._launching is None:
+            self._start_launch()
 
     async def _launch(self) -> _Slot:
         assert self._playwright is not None
@@ -330,6 +346,7 @@ class BrowserPool:
                     # never share this render's browser-wide redirect interceptor.
                     self._current = None
                     self._retire(slot)
+                    self._launch_spare()
             try:
                 return slot, await self._new_context(slot, options)
             except PlaywrightError:

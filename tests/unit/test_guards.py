@@ -95,14 +95,6 @@ async def test_allow_private_network() -> None:
         await g.check("file:///etc/passwd")
 
 
-def test_checks_requests() -> None:
-    assert guard().checks_requests
-    assert guard(allowed_hosts=[]).checks_requests
-    assert guard(allowed_hosts=["x"], allow_private_network=True).checks_requests
-    assert not guard(allow_private_network=True).checks_requests
-    assert guard(allow_private_network=True, file_root="/tmp").checks_requests
-
-
 async def test_empty_allowlist_blocks_everything_remote() -> None:
     with pytest.raises(BlockedRequestError):
         await guard(allowed_hosts=[]).check("https://public.example/")

@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from dravenpdf import __version__
 from dravenpdf.document.images import ImageFormat
-from dravenpdf.document.pages import parse_page_ranges
+from dravenpdf.document.pages import optional_page_ranges, parse_page_ranges
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.document.signing import SignatureBox, SigningKey, signature_problems
 from dravenpdf.document.stamp import Position
@@ -27,6 +27,7 @@ from dravenpdf.options import (
     ColorScheme,
     HeaderFooter,
     Margins,
+    MediaType,
     PaperSize,
     ReducedMotion,
     RenderOptions,
@@ -91,7 +92,7 @@ def _load_auth(path: Path | None) -> RenderAuth | None:
 
 
 def _pages(spec: str | None, doc: PdfDocument) -> list[int] | None:
-    return None if spec is None else parse_page_ranges(spec, doc.page_count)
+    return optional_page_ranges(spec, doc.page_count)
 
 
 def _write_pdf(doc: PdfDocument, output: Path, *, compress: bool = False) -> None:
@@ -161,7 +162,7 @@ def _render_options(
     wait_for: str | None,
     wait_for_ready_flag: bool,
     timeout: int,
-    media: str,
+    media: MediaType,
     **extra: Any,
 ) -> RenderOptions:
     fields: dict[str, Any] = {
@@ -207,7 +208,7 @@ def render(
     wait_for_ready_flag: Annotated[
         bool, typer.Option(help="Wait for window.__DRAVENPDF_READY__ === true.")
     ] = False,
-    media: Annotated[str, typer.Option(help="CSS media: print or screen.")] = "print",
+    media: Annotated[MediaType, typer.Option(help="CSS media: print or screen.")] = "print",
     timeout: Annotated[int, typer.Option(help="Seconds before giving up.")] = 30,
     allow_host: Annotated[
         list[str] | None,
@@ -255,8 +256,6 @@ def render(
 ) -> None:
     """Render an HTML file or a web page to PDF. Load problems are printed as warnings."""
     render_auth = _load_auth(auth)
-    if media not in ("print", "screen"):
-        _fail("--media must be print or screen")
     options = _render_options(
         paper, landscape, margin, header, footer, wait_until, wait_for,
         wait_for_ready_flag, timeout, media,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from dravenpdf import Cookie, RenderAuth, RequestGuard, StorageState
+from dravenpdf import Cookie, RenderAuth, StorageState
 from dravenpdf.render.auth import MAX_TOTAL_BYTES, canonical_origin, origin_of
 
 SECRET = "TOPSECRET-123"
@@ -139,70 +139,6 @@ def test_playwright_storage_state_format_is_accepted() -> None:
         "name": "sid", "value": SECRET, "domain": ".example.com", "path": "/",
         "expires": -1, "httpOnly": True, "secure": True, "sameSite": "Lax",
     }  # fmt: skip
-
-
-# ---------------------------------------------------------------- per-hop headers
-
-PAGE = {"Cookie": "sid=browser", "Authorization": "Bearer page", "Accept": "*/*",
-        "Host": "a.example", "Content-Length": "0", "X-Page": "1"}  # fmt: skip
-
-
-def hops(auth: RenderAuth | None = None) -> RequestGuard:
-    return RequestGuard(auth=auth)
-
-
-def test_first_hop_keeps_the_browser_headers_and_adds_configured() -> None:
-    guard = hops(RenderAuth(headers={"https://a.example": {"X-Key": "k"}}))
-
-    headers = guard.hop_headers(PAGE, "https://a.example/x", "https://a.example/x", first_hop=True)
-
-    assert headers == {"cookie": "sid=browser", "authorization": "Bearer page",
-                       "accept": "*/*", "x-page": "1", "x-key": "k"}  # fmt: skip
-
-
-def test_same_origin_redirect_lets_the_jar_supply_cookies() -> None:
-    headers = hops().hop_headers(
-        PAGE, "https://a.example/next", "https://a.example/x", first_hop=False
-    )
-
-    assert "cookie" not in headers
-    assert headers["authorization"] == "Bearer page"
-
-
-def test_cross_origin_redirect_drops_credentials() -> None:
-    guard = hops(
-        RenderAuth(headers={"https://a.example": {"X-Key": "a"}, "https://b.example": {"X-B": "b"}})
-    )
-
-    headers = guard.hop_headers(PAGE, "https://b.example/y", "https://a.example/x", first_hop=False)
-
-    assert headers == {"accept": "*/*", "x-page": "1", "x-b": "b"}
-
-
-def test_configured_header_overrides_the_page() -> None:
-    guard = hops(RenderAuth(headers={"https://a.example": {"Authorization": "Bearer configured"}}))
-
-    headers = guard.hop_headers(PAGE, "https://a.example/", "https://a.example/", first_hop=True)
-
-    assert headers["authorization"] == "Bearer configured"
-
-
-def test_headers_force_interception() -> None:
-    auth = RenderAuth(headers={"https://a.example": {"X": "1"}})
-
-    assert not RequestGuard(allow_private_network=True).checks_requests
-    assert RequestGuard(allow_private_network=True, auth=auth).checks_requests
-    assert not RequestGuard(allow_private_network=True, auth=RenderAuth()).checks_requests
-
-
-def test_first_hop_sends_exactly_the_browsers_cookies() -> None:
-    # No Cookie header from Chromium (e.g. SameSite withheld it): send none, rather than
-    # letting route.fetch fill one in from the cookie store.
-    page = {k: v for k, v in PAGE.items() if k != "Cookie"}
-
-    headers = hops().hop_headers(page, "https://a.example/", "https://a.example/", first_hop=True)
-
-    assert headers["cookie"] == ""
 
 
 IDB = [{"name": "app", "version": 1,

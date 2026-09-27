@@ -12,6 +12,7 @@ from dravenpdf.document.images import ImageFormat
 from dravenpdf.document.pdf import PdfDocument
 from dravenpdf.options import PaperSize
 from dravenpdf.server.deps import (
+    PDF_RESPONSE,
     pages_arg,
     pdf_response,
     read_pdf,
@@ -24,11 +25,7 @@ from dravenpdf.server.schemas import TextResponse
 router = APIRouter(prefix="/v1/convert", tags=["convert"], dependencies=[Depends(require_api_key)])
 
 
-@router.post(
-    "/images-to-pdf",
-    response_class=Response,
-    responses={200: {"content": {"application/pdf": {}}, "description": "The PDF."}},
-)
+@router.post("/images-to-pdf", response_class=Response, responses=PDF_RESPONSE)
 async def images_to_pdf(
     files: Annotated[list[UploadFile], File(description="Images, one page each, in order.")],
     paper: Annotated[PaperSize | None, Form(description="Fit onto this paper.")] = None,

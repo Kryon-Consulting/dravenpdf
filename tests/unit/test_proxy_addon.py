@@ -158,6 +158,18 @@ async def test_bundle_hit_and_miss_never_open_upstream() -> None:
     assert miss.server_conn.address is None
 
 
+async def test_other_control_host_paths_get_a_quiet_local_404() -> None:
+    proxy, events = addon()
+    favicon = flow(
+        "GET", "http://proxy.dravenpdf.invalid/favicon.ico", host="proxy.dravenpdf.invalid"
+    )
+    await proxy.requestheaders(favicon)
+    assert favicon.response is not None
+    assert favicon.response.status_code == 404
+    assert favicon.server_conn.address is None
+    assert all(event["kind"] == "alive" for event in events)
+
+
 async def test_missing_proxy_auth_is_blocked_and_reported() -> None:
     proxy, events = addon(allowed_hosts=["public.example"])
     request = flow("GET", "https://public.example/", host="public.example", credential="")

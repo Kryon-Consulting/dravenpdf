@@ -16,10 +16,14 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from dravenpdf.errors import TemplateError
 
+# Template sources are compiled per call either way; they can share one environment.
+_STRING_ENV = SandboxedEnvironment(autoescape=True)
+
 
 def _environment(template_dir: str | PathLike[str] | None) -> SandboxedEnvironment:
-    loader = None if template_dir is None else jinja2.FileSystemLoader(template_dir)
-    return SandboxedEnvironment(loader=loader, autoescape=True)
+    if template_dir is None:
+        return _STRING_ENV
+    return SandboxedEnvironment(loader=jinja2.FileSystemLoader(template_dir), autoescape=True)
 
 
 def render_template(

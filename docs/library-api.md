@@ -13,7 +13,6 @@ from dravenpdf import AsyncRenderer, Renderer, RenderOptions, Margins, HeaderFoo
 async with AsyncRenderer(
     max_concurrency=4,            # renders at once
     max_queue=16,                 # waiting renders before PoolExhaustedError
-    recycle_after=500,            # restart Chromium after N renders
     allowed_hosts=None,           # e.g. ["cdn.example.com", "*.example.org"]
     allow_private_network=False,  # True only for trusted input
     on_blocked="fail",            # or "skip": render without blocked resources

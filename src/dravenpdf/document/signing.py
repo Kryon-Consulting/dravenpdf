@@ -20,8 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from os import PathLike
 from pathlib import Path
+from typing import Any
 
 import pikepdf
+from asn1crypto import pem
 from asn1crypto import x509 as asn1_x509
 from pydantic import SecretStr
 from pyhanko.pdf_utils.crypt import AuthStatus
@@ -33,6 +35,8 @@ from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import SignatureCoverageLevel
 from pyhanko_certvalidator import ValidationContext
 
+from dravenpdf.document._objects import acroform, remove_annotations
+from dravenpdf.document._secret import reveal
 from dravenpdf.errors import PdfPasswordError, SigningError
 
 
@@ -57,10 +61,10 @@ def _field_nodes(pdf: pikepdf.Pdf) -> list[tuple[pikepdf.Array, pikepdf.Dictiona
     The field type is inherited from parents, as in the PDF spec. Signed signature
     fields are not descended into: their kids are widgets.
     """
-    acroform = pdf.Root.get("/AcroForm")
-    if not isinstance(acroform, pikepdf.Dictionary):
+    form = acroform(pdf)
+    if form is None:
         return []
-    top = acroform.get("/Fields")
+    top = form.get("/Fields")
     if not isinstance(top, pikepdf.Array):
         return []
     nodes: list[tuple[pikepdf.Array, pikepdf.Dictionary, object]] = []
@@ -120,17 +124,7 @@ def strip_signatures(pdf: pikepdf.Pdf) -> bool:
         for kid in field.get("/Kids", []):
             if isinstance(kid, pikepdf.Dictionary) and kid.is_indirect:
                 removed.add(kid.objgen)
-    for page in pdf.pages:
-        annots = page.obj.get("/Annots")
-        if not isinstance(annots, pikepdf.Array):
-            continue
-        kept = [a for a in annots if not _belongs_to(a, removed)]
-        if len(kept) == len(annots):
-            continue
-        if kept:
-            page.obj.Annots = pikepdf.Array(kept)
-        else:
-            del page.obj["/Annots"]
+    remove_annotations(pdf, lambda a: _belongs_to(a, removed))
     # A parent field whose only kids were signatures would be left empty.
     for array, node, _ in _field_nodes(pdf):
         kids = node.get("/Kids")
@@ -162,10 +156,6 @@ def _belongs_to(annot: pikepdf.Object, fields: set[tuple[int, int]]) -> bool:
     return isinstance(parent, pikepdf.Dictionary) and parent.is_indirect and parent.objgen in fields
 
 
-def _plain(value: str | SecretStr | None) -> str | None:
-    return value.get_secret_value() if isinstance(value, SecretStr) else value
-
-
 class SigningKey:
     """A private key and certificate chain loaded from a PKCS#12 (.p12 / .pfx) file.
 
@@ -183,7 +173,7 @@ class SigningKey:
         cls, source: bytes | str | PathLike[str], password: str | SecretStr | None = None
     ) -> SigningKey:
         data = source if isinstance(source, bytes) else Path(source).read_bytes()
-        passphrase = _plain(password)
+        passphrase = reveal(password)
         try:
             signer = signers.SimpleSigner.load_pkcs12_data(
                 data, other_certs=[], passphrase=passphrase.encode() if passphrase else None
@@ -287,29 +277,30 @@ def sign(
     timestamp_url: str | None = None,
 ) -> bytes:
     """Sign ``data`` and return the signed file (the original bytes plus an update)."""
-    field_name = _free_field_name(data, field_name)
-    metadata = signers.PdfSignatureMetadata(
-        field_name=field_name,
-        reason=reason,
-        location=location,
-        contact_info=contact,
-        subfilter=fields.SigSeedSubFilter.PADES,
-    )
-    spec = fields.SigFieldSpec(field_name)
-    if box is not None:
-        spec = fields.SigFieldSpec(
-            field_name,
-            on_page=box.page,
-            box=(
-                round(box.x),
-                round(box.y),
-                round(box.x + box.width),
-                round(box.y + box.height),
-            ),
-        )
     timestamper = timestamps.HTTPTimeStamper(timestamp_url) if timestamp_url else None
     try:
         writer = IncrementalPdfFileWriter(io.BytesIO(data))
+        # The writer has already parsed the file; read the existing names from it.
+        field_name = _free_field_name(writer.prev, field_name)
+        metadata = signers.PdfSignatureMetadata(
+            field_name=field_name,
+            reason=reason,
+            location=location,
+            contact_info=contact,
+            subfilter=fields.SigSeedSubFilter.PADES,
+        )
+        placement: dict[str, Any] = {}
+        if box is not None:
+            placement = {
+                "on_page": box.page,
+                "box": (
+                    round(box.x),
+                    round(box.y),
+                    round(box.x + box.width),
+                    round(box.y + box.height),
+                ),
+            }
+        spec = fields.SigFieldSpec(field_name, **placement)
         pdf_signer = signers.PdfSigner(
             metadata, signer=key._signer, timestamper=timestamper, new_field_spec=spec
         )
@@ -320,9 +311,8 @@ def sign(
     return output.getvalue()
 
 
-def _free_field_name(data: bytes, wanted: str) -> str:
+def _free_field_name(reader: PdfFileReader, wanted: str) -> str:
     """``wanted``, or ``wanted2``, ``wanted3``... if a field already has that name."""
-    reader = PdfFileReader(io.BytesIO(data))
     taken = {s.field_name for s in reader.embedded_signatures}
     if wanted not in taken:
         return wanted
@@ -334,8 +324,6 @@ def _free_field_name(data: bytes, wanted: str) -> str:
 
 def load_certificates(pem_or_der: Iterable[bytes]) -> list[asn1_x509.Certificate]:
     """Parse trust-root certificates (PEM, possibly several per blob, or DER)."""
-    from asn1crypto import pem
-
     certificates = []
     for blob in pem_or_der:
         try:
@@ -367,7 +355,7 @@ def verify(
     except Exception as exc:
         raise SigningError(f"could not read the signatures: {str(exc)[:300]}") from exc
     if reader.encrypted:
-        secret = _plain(password) or ""
+        secret = reveal(password) or ""
         try:
             auth = reader.decrypt(secret).status
         except Exception:
@@ -405,10 +393,3 @@ def verify(
 
 def _text(value: object) -> str | None:
     return None if value is None else str(value)
-
-
-def has_signatures(data: bytes) -> bool:
-    try:
-        return bool(PdfFileReader(io.BytesIO(data)).embedded_signatures)
-    except Exception:
-        return False

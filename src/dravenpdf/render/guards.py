@@ -39,14 +39,8 @@ Resolver = Callable[[str], Awaitable[list[str]]]
 BlockPolicy = Literal["fail", "skip"]
 
 MAX_REDIRECTS = 10
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _ALWAYS_ALLOWED_SCHEMES = frozenset({"data", "blob", "about"})
 _WEBSOCKET_SCHEMES = {"ws": "http", "wss": "https"}
-_POLICY_VIOLATION = 1008  # WebSocket close code
-# Dropped from a request's own headers when a redirect leaves its original origin.
-_ORIGIN_BOUND_HEADERS = frozenset({"authorization", "proxy-authorization"})
-# Recomputed by Playwright for each fetch; never copied from the browser's request.
-_TRANSPORT_HEADERS = frozenset({"host", "content-length"})
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -64,6 +58,20 @@ def _is_public(address: str) -> bool:
 
 def _normalize_host(host: str) -> str:
     return host.strip().lower().rstrip(".")
+
+
+def _host_port(url: str) -> str | None:
+    """``host:port`` as the proxy reports CONNECT targets, or None without a host."""
+    parts = urlsplit(url)
+    if parts.hostname is None:
+        return None
+    port = parts.port or (443 if parts.scheme in ("https", "wss") else 80)
+    return f"{parts.hostname}:{port}"
+
+
+def _raise_if(url: str, reason: str | None) -> None:
+    if reason is not None:
+        raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
 
 
 class NetworkPolicy:
@@ -120,9 +128,7 @@ class NetworkPolicy:
         return None
 
     async def check(self, url: str) -> None:
-        reason = await self.reason(url)
-        if reason is not None:
-            raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+        _raise_if(url, await self.reason(url))
 
     async def resolve(self, host: str) -> list[str]:
         try:
@@ -173,17 +179,6 @@ class RequestGuard:
         self._redirect_sources: dict[str, str] = {}
         self._observed_urls: dict[str, str] = {}
 
-    @property
-    def checks_requests(self) -> bool:
-        """False when every URL is allowed, so no interception is needed."""
-        return (
-            self.network.has_allowlist
-            or not self.network.allow_private
-            or self._file_root is not None
-            or self._bundle is not None
-            or (self._auth is not None and self._auth.has_headers)
-        )
-
     def proxy_policy(self, credential: str, deadline: float | None) -> ProxyPolicy:
         """Freeze the network policy and response data for one proxy process."""
         from dravenpdf.render._proxy_protocol import ProxyPolicy
@@ -212,9 +207,7 @@ class RequestGuard:
 
     async def check(self, url: str) -> None:
         """Raise :class:`BlockedRequestError` if ``url`` may not be loaded."""
-        reason = await self._reason_to_block(url)
-        if reason is not None:
-            raise BlockedRequestError(f"blocked {url}: {reason}", url=url)
+        _raise_if(url, await self._reason_to_block(url))
 
     async def _reason_to_block(self, url: str) -> str | None:
         parts = urlsplit(url)
@@ -233,12 +226,18 @@ class RequestGuard:
         logger.warning("blocked request to %s: %s", url, reason)
         self.blocked.append((url, reason))
 
+    def blocked_error(self) -> BlockedRequestError | None:
+        """The error for the first blocked request, or None if nothing was blocked."""
+        if not self.blocked:
+            return None
+        url, reason = self.blocked[0]
+        more = f" (and {len(self.blocked) - 1} more)" if len(self.blocked) > 1 else ""
+        return BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
+
     def raise_if_blocked(self) -> None:
         """Raise for the first blocked request, if any."""
-        if self.blocked:
-            url, reason = self.blocked[0]
-            more = f" (and {len(self.blocked) - 1} more)" if len(self.blocked) > 1 else ""
-            raise BlockedRequestError(f"blocked {url}: {reason}{more}", url=url)
+        if (error := self.blocked_error()) is not None:
+            raise error
 
     async def install(self, context: BrowserContext) -> None:
         """Keep local-file limits and observe redirects; the proxy guards network."""
@@ -250,10 +249,8 @@ class RequestGuard:
         page.on("websocket", self._observe_websocket)
 
     def _observe_websocket(self, ws: WebSocket) -> None:
-        parts = urlsplit(ws.url)
-        if parts.hostname is not None:
-            port = parts.port or (443 if parts.scheme == "wss" else 80)
-            self._observed_urls[f"{parts.hostname}:{port}"] = ws.url
+        if (target := _host_port(ws.url)) is not None:
+            self._observed_urls[target] = ws.url
 
     async def _handle_local(self, route: Route) -> None:
         url = route.request.url
@@ -274,10 +271,8 @@ class RequestGuard:
         origin = origin_of(request.url)
         if origin is not None:
             self._observed_urls[origin] = request.url
-            parts = urlsplit(request.url)
-            if parts.hostname is not None:
-                port = parts.port or (443 if parts.scheme == "https" else 80)
-                self._observed_urls[f"{parts.hostname}:{port}"] = request.url
+            if (target := _host_port(request.url)) is not None:
+                self._observed_urls[target] = request.url
         if parent is not None and origin is not None:
             self._redirect_sources[origin] = origin_of(parent.url) or "unknown"
         hops = 0
@@ -296,26 +291,3 @@ class RequestGuard:
             if source is not None:
                 reason = f"{reason} (redirected from {source})"
             self.blocked.append((observed, reason))
-
-    def hop_headers(
-        self, request_headers: dict[str, str], hop_url: str, first_url: str, *, first_hop: bool
-    ) -> dict[str, str]:
-        """The headers to send for one hop of a request (see the module docstring)."""
-        cross_origin = origin_of(hop_url) != origin_of(first_url)
-        headers: dict[str, str] = {}
-        for name, value in request_headers.items():
-            lowered = name.lower()
-            if lowered in _TRANSPORT_HEADERS:
-                continue
-            if lowered == "cookie" and not first_hop:
-                continue  # the cookie jar supplies the right cookies for this URL
-            if cross_origin and lowered in _ORIGIN_BOUND_HEADERS:
-                continue
-            headers[lowered] = value
-        if first_hop:
-            # Exactly the cookies Chromium chose (SameSite, Secure, ...): with no Cookie
-            # header, route.fetch would add every stored cookie for the URL itself.
-            headers.setdefault("cookie", "")
-        if self._auth is not None:
-            headers.update(self._auth.headers_for(hop_url))
-        return headers

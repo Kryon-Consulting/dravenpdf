@@ -179,7 +179,9 @@ async def test_stalled_context_does_not_delay_render_timeout_or_keep_proxy_forev
         await renderer.from_html("<p>hello</p>", RenderOptions(timeout_ms=50))
     assert asyncio.get_running_loop().time() - started < 0.2
     assert not gate.closed
-    assert pool._current is None  # a stalled Chromium is not reused
+    stalled = pool.browsers[0]
+    # A stalled Chromium is not reused (the current browser, if any, is the spare).
+    assert pool._current is None or pool._current.browser is not stalled
     await asyncio.sleep(0.1)
     assert gate.closed
 
@@ -254,7 +256,25 @@ async def test_isolated_leases_use_distinct_browsers_and_close_them() -> None:
 
     await asyncio.gather(use(), use(), use())
     await pool.close()
-    assert pool.launches == 3
+    assert pool.launches == 4  # one per lease, plus the spare waiting for the next
     assert len({id(ctx) for ctx in contexts}) == 3
     assert all(not browser.connected for browser in pool.browsers)
     assert pool.active == 0
+
+
+async def test_isolated_lease_launches_the_next_browser_in_the_background() -> None:
+    pool = FakePool()
+    pool.launch_delay = 0.2
+    await pool._ensure_browser()  # what start() does
+    loop = asyncio.get_running_loop()
+
+    async with pool.context(isolated=True):
+        await asyncio.sleep(0.3)  # the spare launches while this lease is in use
+    started = loop.time()
+    async with pool.context(isolated=True):
+        waited = loop.time() - started
+
+    assert waited < 0.1  # the second lease didn't wait for a launch
+    await pool.close()
+    assert pool.launches == 3
+    assert all(not browser.connected for browser in pool.browsers)
