@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -18,6 +19,7 @@ from dravenpdf import (
     BlockedRequestError,
     HttpError,
     IncompleteRenderError,
+    LimitExceededError,
     PdfDocument,
     PoolExhaustedError,
     RenderError,
@@ -928,3 +930,22 @@ def test_signing_keys_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings()
 
     assert str(settings.signing_keys["a"].pkcs12) == "/keys/a.p12"
+
+
+def test_failed_zip_closes_its_generator_in_the_worker_thread() -> None:
+    closed_in: list[threading.Thread] = []
+
+    def files() -> Iterator[tuple[str, bytes]]:
+        try:
+            yield "a", b"x" * 10
+            yield "b", b"x" * 10
+        finally:
+            closed_in.append(threading.current_thread())
+
+    try:
+        deps._write_zip(files(), 15, False)
+    except LimitExceededError:
+        # Checked while the traceback (which references the generator) is still alive.
+        assert closed_in == [threading.current_thread()]
+    else:
+        pytest.fail("no LimitExceededError")

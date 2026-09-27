@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Generator, Iterator
+from contextlib import closing
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -54,8 +56,9 @@ async def pdf_to_images(
     doc = await read_pdf(file)
     targets = pages_arg(pages, doc) or list(range(doc.page_count))
     settings = settings_of(request)
-    images = await asyncio.to_thread(
-        doc.to_images,
+    # Nothing is rendered yet: each page is rendered, encoded and written to the ZIP
+    # one at a time inside zip_response's worker thread.
+    images = doc.iter_images(
         dpi=dpi,
         fmt=format,
         pages=targets,
@@ -63,11 +66,23 @@ async def pdf_to_images(
         max_total_bytes=settings.max_output_bytes,
     )
     extension = "jpg" if format == "jpeg" else "png"
-    files = [(f"page-{i + 1}.{extension}", data) for i, data in zip(targets, images, strict=True)]
     # PNG and JPEG are compressed already; deflating them again only costs CPU.
     return await zip_response(
-        files, "pages.zip", max_bytes=settings.max_output_bytes, compress=False
-    )
+        _named(targets, images, extension), "pages.zip",
+        max_bytes=settings.max_output_bytes, compress=False,
+    )  # fmt: skip
+
+
+def _named(
+    targets: list[int], images: Generator[bytes, None, None], ext: str
+) -> Iterator[tuple[str, bytes]]:
+    # Not zip()/enumerate(): they keep their last item, which would hold the previous
+    # image while the next one renders. Closing this generator closes ``images``.
+    with closing(images):
+        for index in targets:
+            data = next(images)
+            yield f"page-{index + 1}.{ext}", data
+            del data
 
 
 @router.post("/text")

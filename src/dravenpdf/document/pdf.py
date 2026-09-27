@@ -6,7 +6,7 @@ import asyncio
 import io
 import secrets
 import warnings
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -97,6 +97,8 @@ class PdfDocument:
         # The bytes this document was read from, encrypted or not: what
         # verify_signatures() checks. Never written out (see _source for that).
         self._original: bytes | None = None
+        # _readable_bytes() of a derived document, written once (its PDF never changes).
+        self._readable: bytes | None = None
         self.render_report: RenderReport | None = None
         """Set on documents returned by a renderer: what failed while rendering.
         Documents derived from this one (rotate, merge, ...) don't carry it."""
@@ -407,6 +409,42 @@ class PdfDocument:
             max_total_bytes=max_total_bytes,
         )
 
+    def iter_images(
+        self,
+        *,
+        dpi: int = 150,
+        fmt: ImageFormat = "png",
+        pages: Iterable[int] | None = None,
+        jpeg_quality: int = 85,
+        max_pixels: int | None = None,
+        max_total_bytes: int | None = None,
+    ) -> Generator[bytes, None, None]:
+        """Like :meth:`to_images`, but renders each page only when it is asked for,
+        so a caller that writes and drops each image holds one at a time.
+
+        The options are checked now; everything else (writing the file out for
+        pdfium, opening it, rendering) happens as the iterator is consumed, so
+        consume it in a worker thread from async code. Close it (``contextlib.closing``)
+        when stopping early, so pdfium's copy is released in that same thread.
+        """
+        image_ops.check_image_options(dpi, fmt, jpeg_quality)
+        targets = None if pages is None else list(pages)
+        return self._iter_images(dpi, fmt, targets, jpeg_quality, max_pixels, max_total_bytes)
+
+    def _iter_images(
+        self,
+        dpi: int,
+        fmt: ImageFormat,
+        pages: list[int] | None,
+        jpeg_quality: int,
+        max_pixels: int | None,
+        max_total_bytes: int | None,
+    ) -> Generator[bytes, None, None]:
+        yield from image_ops.iter_pdf_to_images(
+            self._readable_bytes(), dpi=dpi, fmt=fmt, pages=pages,
+            jpeg_quality=jpeg_quality, max_pixels=max_pixels, max_total_bytes=max_total_bytes,
+        )  # fmt: skip
+
     def extract_text(self) -> list[str]:
         """Text of each page. Scanned pages have none (no OCR)."""
         return text_ops.extract_text(self._readable_bytes())
@@ -574,12 +612,14 @@ class PdfDocument:
 
     def _readable_bytes(self) -> bytes:
         """The document as a file for reading it (images, text, verification):
-        unencrypted, and with nothing removed."""
+        unencrypted, and with nothing removed. Written once, then kept."""
         if self._source is not None:
             return self._source
-        buffer = io.BytesIO()
-        self._pdf.save(buffer)
-        return buffer.getvalue()
+        if self._readable is None:
+            buffer = io.BytesIO()
+            self._pdf.save(buffer)
+            self._readable = buffer.getvalue()
+        return self._readable
 
     # ------------------------------------------------------------------ output
 

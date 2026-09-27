@@ -116,8 +116,9 @@ async def zip_response(
     """A ZIP of ``files``, built in a worker thread and streamed from a spooled file.
 
     ``files`` is consumed in the worker thread, so it may be a generator that does
-    the work lazily. Past ``max_bytes`` of (uncompressed) content it raises
-    :class:`LimitExceededError`. Pass ``compress=False`` for already-compressed data.
+    the work lazily; it is closed there too if building the ZIP fails. Past
+    ``max_bytes`` of (uncompressed) content it raises :class:`LimitExceededError`.
+    Pass ``compress=False`` for already-compressed data.
     """
     spool = await asyncio.to_thread(_write_zip, files, max_bytes, compress)
     size = spool.tell()
@@ -153,6 +154,11 @@ def _write_zip(
                 del data  # written; don't hold it while the next file is produced
     except BaseException:
         spool.close()
+        # Close a half-consumed generator here, in the worker thread. Left to the
+        # traceback, it would be finalized later on the event loop, where releasing
+        # what it holds (a pdfium document takes the pdfium lock) could block.
+        if (close := getattr(files, "close", None)) is not None:
+            close()
         raise
     return spool
 

@@ -341,8 +341,14 @@ PdfDocument.from_images([png, jpg])                     # page = image size (96 
 PdfDocument.from_images([png, jpg], paper="A4", landscape=False, margin=36)  # fit on paper
 doc.to_images(dpi=150, fmt="png", pages=None)           # list[bytes]; fmt "png" | "jpeg"
 doc.to_images(dpi=300, max_pixels=40_000_000, max_total_bytes=100 * 2**20)  # LimitExceededError past either
+doc.iter_images(dpi=150)                                # same options; one page rendered per next()
 doc.extract_text()                                      # list[str], one per page; no OCR
 ```
+
+`iter_images` holds one image at a time. It checks its options at once and does the
+rest as it is consumed, so from async code consume it in a worker thread, and close it
+(`contextlib.closing`) there if you stop early. Pages are encoded outside the global
+pdfium lock, so other threads can use pdfium meanwhile.
 
 ## HTML with its assets, from memory
 

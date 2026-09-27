@@ -68,7 +68,10 @@ Full reasoning is in `docs/decisions.md`.
   that copies pages between pikepdf PDFs must end with `pages._detach()` (see
   `docs/architecture.md`), or the result breaks once its source is garbage-collected.
 - Call pdfium (pypdfium2) only through `document/_pdfium.open_pdf()`: pdfium is not
-  thread-safe and the server runs PDF work in threads.
+  thread-safe and the server runs PDF work in threads. With
+  `open_pdf(..., hold_lock=False)`, hold `_pdfium.LOCK` around every pdfium call
+  yourself (see `images._render_pages`), and close a half-used image iterator in the
+  thread that consumed it, not on the event loop.
 - New stamp kinds go through `stamp._stamp_each`/`_place`, which handle page rotation.
 - Server: map new error codes to statuses only in `server/errors.py`; run CPU-bound
   PDF work with `asyncio.to_thread`; keep route handlers thin. Tests in `tests/server/`
