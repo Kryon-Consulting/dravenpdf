@@ -8,6 +8,36 @@
 
 **Tech Stack:** Python 3.12, pikepdf, pypdfium2 5.13, Pillow, img2pdf, Playwright, mitmproxy, FastAPI, Typer, pytest + pytest-asyncio (`asyncio_mode = "auto"`).
 
+## Implementation notes (deviations from the steps below)
+
+Implemented on `claude/eager-keller-upcxyc`, one commit per task. Where the code differs
+from the steps below, the code is right:
+
+- **Task 1:** the test's `set & list` expression raised `TypeError`; it compares with
+  `set(...)`. Imports left unused by the move (`urlsplit` in `auth.py`, `Awaitable`/`Callable`
+  in `guards.py`) are removed.
+- **Task 2:** the confdir is built *inside* the start attempt's `try`, so a failure there is
+  retried and ends as `RenderError("could not start network proxy")`, as before (tested).
+- **Task 4:** `PdfDocument.iter_images` checks its options at once but writes the file and
+  opens pdfium only when consumed, so the route does no PDF work on the event loop.
+  `zip_response` closes a half-consumed generator in its worker thread, and the route's
+  `_named` closes the image iterator, so a failed ZIP never finalizes a pdfium document
+  (which takes the pdfium lock) on the event loop. The iterators are typed `Generator`.
+  `open_pdf(hold_lock=True)` keeps its single lock hold.
+- **Task 5:** every TIFF/MPO frame is checked (img2pdf makes each frame a page).
+- **Task 6:** `stamp_html(options=...)` resets all page-layout fields (landscape, scale,
+  header/footer, page ranges, tagged/outline, print_background), not just size and margins.
+- **Task 7:** `overlay` on a signed document clones twice: once for the input, once for
+  `_detach()` of the result, which is needed.
+- **Task 8:** `**styling` doesn't type-check under `mypy --strict`. Instead the stamp methods
+  take `opacity=None` for "this kind's default" (0.3 for text, else 1.0) and the front ends
+  pass the value through. FastAPI already turns an empty `owner_password` field into
+  `None`, so the HTTP route needs no `or None`. The CLI keeps its `--no-copy` hint via
+  `main()`, and its encrypt test runs `main()` in a subprocess.
+- **Task 9:** `json_object_field` takes the expected-value description, so form fill keeps
+  its "must be an object of text, true/false or null" message. The `_pages(` grep matched
+  unrelated names; the check is `grep -rnw "_pages\|pages_arg"`.
+
 ## Global Constraints
 
 - Read `CLAUDE.md` first. Its "Decisions already made" and "Conventions" sections are binding, and none of these tasks may weaken a security invariant (proxy ordering, shielded launches, SecretStr handling, cookie rules).
