@@ -16,8 +16,6 @@ import posixpath
 from collections.abc import Mapping
 from urllib.parse import unquote, urlsplit
 
-from playwright.async_api import Route
-
 from dravenpdf.errors import AssetError
 
 ORIGIN = "https://bundle.dravenpdf.invalid"
@@ -116,13 +114,3 @@ class AssetBundle:
         key = posixpath.normpath(path).lstrip("/")
         data = self.files.get(key)
         return None if data is None else (data, content_type(key))
-
-    async def fulfill(self, route: Route) -> None:
-        found = self.lookup(route.request.url)
-        if found is None:
-            await route.fulfill(status=404, body=b"not in the asset bundle")
-            return
-        body, kind = found
-        await route.fulfill(
-            status=200, body=body, headers={"Content-Type": kind, "Cache-Control": "no-store"}
-        )

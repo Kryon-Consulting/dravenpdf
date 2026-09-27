@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Histogram
 from prometheus_client.core import GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
@@ -42,8 +42,5 @@ class Metrics:
             ["source"],
             registry=self.registry,
             buckets=(0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120),
-        )
-        self.errors = Counter(
-            "dravenpdf_errors", "Error responses, by error code.", ["code"], registry=self.registry
         )
         self.registry.register(_PoolCollector(get_pool))

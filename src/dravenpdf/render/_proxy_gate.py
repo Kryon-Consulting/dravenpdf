@@ -63,10 +63,6 @@ class ProxyGate:
     def fatal(self) -> bool:
         return self._fatal_reason is not None or self._process.returncode is not None
 
-    @property
-    def fatal_reason(self) -> str | None:
-        return self._fatal_reason
-
     @classmethod
     async def start(
         cls, policy: ProxyPolicy, ca: ProxyCA, deadline: float, *, upstream_ca: Path | None = None

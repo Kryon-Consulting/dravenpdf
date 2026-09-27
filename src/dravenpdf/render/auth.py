@@ -356,7 +356,3 @@ class RenderAuth(_Model):
         if not headers:
             return {}
         return {name: secret.get_secret_value() for name, secret in headers.items()}
-
-    @property
-    def has_headers(self) -> bool:
-        return any(self.headers.values())

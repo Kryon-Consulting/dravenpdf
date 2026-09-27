@@ -54,8 +54,8 @@ class AsyncRenderer:
     Args:
         max_concurrency: renders running at once (each has its own Chromium process).
         max_queue: renders allowed to wait for a slot before PoolExhaustedError.
-        recycle_after: shared-pool browser recycle setting; strict renders use a
-            dedicated process regardless of this value.
+        recycle_after: browser recycle setting for shared ``pool.context()`` leases;
+            renders always use a dedicated Chromium process, so it doesn't apply to them.
         allowed_hosts: only these hosts may be loaded (see RequestGuard).
         allow_private_network: allow private/loopback addresses. Trusted input only.
         on_blocked: ``"fail"`` raises BlockedRequestError when any request was

@@ -50,7 +50,6 @@ def create_app(settings: Settings | None = None, renderer: AsyncRenderer | None 
         active = renderer or AsyncRenderer(
             max_concurrency=settings.max_concurrency,
             max_queue=settings.max_queue,
-            recycle_after=settings.browser_recycle_after,
             allowed_hosts=settings.allowed_host_list,
         )
         await active.start()

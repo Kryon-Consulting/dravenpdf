@@ -39,14 +39,8 @@ Resolver = Callable[[str], Awaitable[list[str]]]
 BlockPolicy = Literal["fail", "skip"]
 
 MAX_REDIRECTS = 10
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _ALWAYS_ALLOWED_SCHEMES = frozenset({"data", "blob", "about"})
 _WEBSOCKET_SCHEMES = {"ws": "http", "wss": "https"}
-_POLICY_VIOLATION = 1008  # WebSocket close code
-# Dropped from a request's own headers when a redirect leaves its original origin.
-_ORIGIN_BOUND_HEADERS = frozenset({"authorization", "proxy-authorization"})
-# Recomputed by Playwright for each fetch; never copied from the browser's request.
-_TRANSPORT_HEADERS = frozenset({"host", "content-length"})
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -173,17 +167,6 @@ class RequestGuard:
         self._redirect_sources: dict[str, str] = {}
         self._observed_urls: dict[str, str] = {}
 
-    @property
-    def checks_requests(self) -> bool:
-        """False when every URL is allowed, so no interception is needed."""
-        return (
-            self.network.has_allowlist
-            or not self.network.allow_private
-            or self._file_root is not None
-            or self._bundle is not None
-            or (self._auth is not None and self._auth.has_headers)
-        )
-
     def proxy_policy(self, credential: str, deadline: float | None) -> ProxyPolicy:
         """Freeze the network policy and response data for one proxy process."""
         from dravenpdf.render._proxy_protocol import ProxyPolicy
@@ -296,26 +279,3 @@ class RequestGuard:
             if source is not None:
                 reason = f"{reason} (redirected from {source})"
             self.blocked.append((observed, reason))
-
-    def hop_headers(
-        self, request_headers: dict[str, str], hop_url: str, first_url: str, *, first_hop: bool
-    ) -> dict[str, str]:
-        """The headers to send for one hop of a request (see the module docstring)."""
-        cross_origin = origin_of(hop_url) != origin_of(first_url)
-        headers: dict[str, str] = {}
-        for name, value in request_headers.items():
-            lowered = name.lower()
-            if lowered in _TRANSPORT_HEADERS:
-                continue
-            if lowered == "cookie" and not first_hop:
-                continue  # the cookie jar supplies the right cookies for this URL
-            if cross_origin and lowered in _ORIGIN_BOUND_HEADERS:
-                continue
-            headers[lowered] = value
-        if first_hop:
-            # Exactly the cookies Chromium chose (SameSite, Secure, ...): with no Cookie
-            # header, route.fetch would add every stored cookie for the URL itself.
-            headers.setdefault("cookie", "")
-        if self._auth is not None:
-            headers.update(self._auth.headers_for(hop_url))
-        return headers

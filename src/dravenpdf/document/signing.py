@@ -405,10 +405,3 @@ def verify(
 
 def _text(value: object) -> str | None:
     return None if value is None else str(value)
-
-
-def has_signatures(data: bytes) -> bool:
-    try:
-        return bool(PdfFileReader(io.BytesIO(data)).embedded_signatures)
-    except Exception:
-        return False
