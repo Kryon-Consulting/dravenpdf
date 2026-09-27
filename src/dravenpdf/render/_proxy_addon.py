@@ -195,6 +195,12 @@ class ProxyAddon:
             if url == "http://proxy.dravenpdf.invalid/__ready":
                 flow.response = http.Response.make(200, b"ok", {"Cache-Control": "no-store"})
                 return
+            if url.startswith("http://proxy.dravenpdf.invalid/"):
+                # Anything else on the control host (Chromium fetches the warm-up
+                # page's favicon, sometimes before the page closes): a local 404.
+                # Reporting it as a block would fail a render that loaded nothing.
+                flow.response = http.Response.make(404, b"", {"Cache-Control": "no-store"})
+                return
             await self.network.check(url)
             if self.bundle is not None and self.bundle.owns(url):
                 found = self.bundle.lookup(url)
